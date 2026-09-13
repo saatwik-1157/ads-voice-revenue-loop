@@ -1,14 +1,15 @@
 import { createContext, voiceWebhookUrl, type Context } from './orchestrator.ts';
 import { createHttpServer } from './server/http.ts';
 import { generateBrief } from './brief/generator.ts';
-import { approve, reject, requestGate1, requestGate2 } from './approvals/gates.ts';
+import { approve, reject, requestGate1 } from './approvals/gates.ts';
 import { publishCampaign, syncInsights } from './meta/publisher.ts';
-import { evaluate, planScale } from './economics/decision.ts';
+import { evaluate } from './economics/decision.ts';
 import { economicsForRun } from './economics/metrics.ts';
 import { formatBrief, formatEconomics, formatRecommendation } from './report.ts';
 import { runDemo } from './demo/e2e.ts';
+import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler, type CycleResult } from './scheduler.ts';
 import { money } from './core/util.ts';
-import { pauseKilledAds } from './apply.ts';
+import { applyRecommendation, describeOutcome } from './apply.ts';
 import type { MockMetaProvider } from './meta/mock.ts';
 
 const USAGE = `founder-labs-autopilot - autonomous Ads -> Voice -> Revenue loop
@@ -25,8 +26,11 @@ Commands
   sync <runId>                    Pull Meta insights into the local store
   review <runId>                  Phase G: economics + KEEP/KILL/ITERATE/SCALE
   apply <runId>                   Act on the last review, within the caps
+  cycle [runId]                   Run one evaluation cycle now (sync + review + apply)
+  schedule [runId] [--every 6h]   Run the evaluation cycle on a loop until stopped
+  cycles [runId]                  Show recent evaluation cycles
   runs                            List runs
-  serve                           Start the webhook/middleware server
+  serve [--schedule] [--every 6h] Start the webhook server, optionally with the cycle loop
   guardrails                      Print the active control layer
 
 Everything runs against mock providers unless FL_MODE=live and credentials are set.
@@ -198,8 +202,56 @@ async function main(argv: string[]): Promise<number> {
         return await applyDecision(ctx, runId);
       }
 
+      case 'cycle': {
+        const runId = positional[0];
+        const results = runId ? [await runCycle(ctx, runId)] : await runAllCycles(ctx);
+        reportCycles(results);
+        return results.some((r) => r.status === 'error') ? 1 : 0;
+      }
+
+      case 'schedule': {
+        const intervalMs = flags.every
+          ? parseDuration(flags.every)
+          : ctx.guardrails.evaluationIntervalHours * 3_600_000;
+        const runId = positional[0];
+        process.stdout.write(
+          `evaluating ${runId ?? 'every live run'} every ${formatDuration(intervalMs)} (mode=${ctx.env.mode}); Ctrl-C to stop
+`,
+        );
+        const handle = startScheduler(ctx, {
+          intervalMs,
+          runId,
+          immediate: flags.immediate !== 'false',
+          onCycle: reportCycles,
+        });
+        stopOnSignal(() => handle.stop());
+        await handle.done;
+        return 0;
+      }
+
+      case 'cycles': {
+        const runId = positional[0] ?? ctx.store.latestRun();
+        if (!runId) return fail('no run');
+        const rows = ctx.store.listCycles(runId, Number(flags.limit ?? 20));
+        if (!rows.length) {
+          process.stdout.write(`no cycles recorded for ${runId}
+`);
+          return 0;
+        }
+        for (const row of rows) {
+          process.stdout.write(
+            `${row.startedAt}  ${row.status.padEnd(8)} ${(row.decision ?? '-').padEnd(8)} ${row.signal ?? ''}
+`,
+          );
+          if (row.detail && row.detail !== 'null') process.stdout.write(`    ${row.detail}
+`);
+        }
+        return 0;
+      }
+
       case 'serve': {
         const server = createHttpServer(ctx);
+        const scheduleFlag = flags.schedule === 'true' || Boolean(flags.every);
         server.listen(ctx.env.port, () => {
           process.stdout.write(`listening on http://localhost:${ctx.env.port}  (mode=${ctx.env.mode})\n`);
           process.stdout.write(`  Meta leadgen webhook  POST ${ctx.env.publicBaseUrl}/webhooks/meta\n`);
@@ -208,6 +260,22 @@ async function main(argv: string[]): Promise<number> {
             process.stdout.write('  WARNING: webhook secrets are unset, so every inbound payload will be rejected.\n');
           }
         });
+
+        if (scheduleFlag) {
+          const intervalMs = flags.every
+            ? parseDuration(flags.every)
+            : ctx.guardrails.evaluationIntervalHours * 3_600_000;
+          process.stdout.write(`  evaluation cycle every ${formatDuration(intervalMs)}
+`);
+          const handle = startScheduler(ctx, { intervalMs, onCycle: reportCycles });
+          stopOnSignal(() => {
+            handle.stop();
+            server.close();
+          });
+          await handle.done;
+          return 0;
+        }
+
         await new Promise(() => {});
         return 0;
       }
@@ -225,65 +293,54 @@ async function main(argv: string[]): Promise<number> {
 async function applyDecision(ctx: Context, runId: string): Promise<number> {
   const brief = ctx.store.getBrief(runId);
   if (!brief) return fail(`run ${runId} has no brief`);
-  const campaign = ctx.store.getCampaign(runId);
-  if (!campaign) return fail(`run ${runId} has no campaign`);
+  if (!ctx.store.getCampaign(runId)) return fail(`run ${runId} has no campaign`);
 
   const rec = evaluate(ctx.store, ctx.guardrails, runId, brief);
-  process.stdout.write(`${formatRecommendation(rec, ctx.guardrails)}\n\n`);
+  process.stdout.write(`${formatRecommendation(rec, ctx.guardrails)}
 
-  if (rec.decision === 'KILL' && rec.requiresHumanApproval) {
-    await ctx.meta.setStatus(campaign.campaignId, 'PAUSED');
-    ctx.store.setCampaignStatus(campaign.campaignId, 'PAUSED');
-    ctx.store.setRunState(runId, 'paused', rec.rationale);
-    ctx.store.audit(runId, 'agent', 'campaign.paused', { reason: rec.signal });
-    process.stdout.write('campaign PAUSED and handed back to a human.\n');
-    return 0;
+`);
+
+  // unattended:false - a person running this by hand has already decided to
+  // act, so the inter-raise cooldown that paces the scheduler does not apply.
+  const outcome = await applyRecommendation(ctx, runId, brief, rec, { unattended: false });
+  if ('pausedAds' in outcome && outcome.pausedAds) {
+    process.stdout.write(`paused ${outcome.pausedAds} creative(s)
+`);
   }
-
-  const plan = planScale(ctx.guardrails, campaign.dailyBudgetMinor, rec.decision, rec.perAd);
-  const paused = await pauseKilledAds(ctx, runId, rec, plan);
-  if (paused) process.stdout.write(`paused ${paused} creative(s)\n`);
-  for (const warning of plan.warnings) process.stdout.write(`WARNING: ${warning}\n`);
-
-  if (plan.proposedDailyMinor === campaign.dailyBudgetMinor) {
-    process.stdout.write(`no budget change (${plan.reason})\n`);
-    return 0;
+  if ('plan' in outcome) {
+    for (const warning of outcome.plan.warnings) process.stdout.write(`WARNING: ${warning}
+`);
   }
-
-  if (plan.needsApproval) {
-    const request = requestGate2(
-      ctx.store,
-      runId,
-      `Raise daily budget to ${money(plan.proposedDailyMinor, ctx.guardrails.currency)}`,
-      {
-        from: campaign.dailyBudgetMinor,
-        to: plan.proposedDailyMinor,
-        proven: plan.provenDailyMinor,
-        holdout: plan.holdoutDailyMinor,
-        holdoutAds: plan.holdoutAdIds,
-        reason: plan.reason,
-      },
-    );
-    process.stdout.write(`GATE #2 requested ${request.approvalId}: ${plan.reason}\n`);
-    process.stdout.write(`approve with: node src/cli.ts approve ${request.approvalId} --by "your name"\n`);
-    return 0;
+  process.stdout.write(`${describeOutcome(outcome, ctx.guardrails.currency)}
+`);
+  if (outcome.kind === 'approval_requested') {
+    process.stdout.write(`approve with: node src/cli.ts approve ${outcome.approvalId} --by "your name"
+`);
   }
-
-  await ctx.meta.setDailyBudget(campaign.adsetId, plan.proposedDailyMinor);
-  ctx.store.setCampaignBudget(campaign.campaignId, plan.proposedDailyMinor);
-  ctx.store.audit(runId, 'agent', 'budget.raised', {
-    from: campaign.dailyBudgetMinor,
-    to: plan.proposedDailyMinor,
-    provenDailyMinor: plan.provenDailyMinor,
-    holdoutDailyMinor: plan.holdoutDailyMinor,
-    holdoutAdIds: plan.holdoutAdIds,
-  });
-  process.stdout.write(
-    `budget raised to ${money(plan.proposedDailyMinor, ctx.guardrails.currency)}/day ` +
-      `(${money(plan.provenDailyMinor, ctx.guardrails.currency)} proven + ` +
-      `${money(plan.holdoutDailyMinor, ctx.guardrails.currency)} holdout across ${plan.holdoutAdIds.length} test creative(s))\n`,
-  );
   return 0;
+}
+
+function reportCycles(results: CycleResult[]): void {
+  for (const result of results) {
+    const marker = result.status === 'ok' ? '' : `[${result.status}] `;
+    process.stdout.write(`${new Date().toISOString()}  ${result.runId}  ${marker}${result.summary}
+`);
+  }
+  if (!results.length) process.stdout.write(`${new Date().toISOString()}  no live runs to evaluate
+`);
+}
+
+/** Let Ctrl-C finish the current cycle and close the store cleanly. */
+function stopOnSignal(stop: () => void): void {
+  let stopping = false;
+  const handler = (): void => {
+    if (stopping) process.exit(130);
+    stopping = true;
+    process.stdout.write('\nstopping after the current cycle; Ctrl-C again to force\n');
+    stop();
+  };
+  process.on('SIGINT', handler);
+  process.on('SIGTERM', handler);
 }
 
 function parseFlags(args: string[]): Record<string, string> {

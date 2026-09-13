@@ -143,6 +143,25 @@ CREATE TABLE IF NOT EXISTS audit (
   detail TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cycles (
+  cycle_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL,
+  decision TEXT,
+  signal TEXT,
+  detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS locks (
+  name TEXT PRIMARY KEY,
+  holder TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cycles_run ON cycles(run_id);
 CREATE INDEX IF NOT EXISTS idx_leads_run ON leads(run_id);
 CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);
 CREATE INDEX IF NOT EXISTS idx_spend_run ON spend(run_id);
@@ -506,5 +525,90 @@ export class Store {
 
   totalSpendMinor(runId: string): number {
     return this.spendByAd(runId).reduce((sum, row) => sum + row.spendMinor, 0);
+  }
+
+  // --- evaluation cycles -------------------------------------------------
+  startCycle(runId: string, at: string = now()): string {
+    const cycleId = id('cyc');
+    this.db
+      .prepare('INSERT INTO cycles (cycle_id, run_id, started_at, status) VALUES (?,?,?,?)')
+      .run(cycleId, runId, at, 'running');
+    return cycleId;
+  }
+
+  finishCycle(
+    cycleId: string,
+    status: 'ok' | 'skipped' | 'error',
+    outcome: { decision?: string | null; signal?: string | null; detail?: unknown } = {},
+  ): void {
+    this.db
+      .prepare('UPDATE cycles SET finished_at = ?, status = ?, decision = ?, signal = ?, detail = ? WHERE cycle_id = ?')
+      .run(
+        now(),
+        status,
+        outcome.decision ?? null,
+        outcome.signal ?? null,
+        typeof outcome.detail === 'string' ? outcome.detail : JSON.stringify(outcome.detail ?? null),
+        cycleId,
+      );
+  }
+
+  listCycles(runId: string, limit = 20): Array<{
+    cycleId: string;
+    startedAt: string;
+    finishedAt: string | null;
+    status: string;
+    decision: string | null;
+    signal: string | null;
+    detail: string | null;
+  }> {
+    return this.db
+      .prepare(
+        'SELECT cycle_id as cycleId, started_at as startedAt, finished_at as finishedAt, status, decision, signal, detail FROM cycles WHERE run_id = ? ORDER BY started_at DESC LIMIT ?',
+      )
+      .all(runId, limit) as never;
+  }
+
+  /** When this kind of event last happened on this run, if ever. */
+  lastEventAt(runId: string, kind: string): string | null {
+    const row = this.db
+      .prepare('SELECT MAX(at) as at FROM audit WHERE run_id = ? AND kind = ?')
+      .get(runId, kind) as { at: string | null } | undefined;
+    return row?.at ?? null;
+  }
+
+  // --- locks -------------------------------------------------------------
+  /**
+   * Take a leased lock, or return false if someone else holds a live one.
+   *
+   * The lease matters more than the lock: a cycle that dies mid-run must not
+   * wedge the scheduler forever, so the lock expires on its own. Wrapped in
+   * BEGIN IMMEDIATE so two processes cannot both win the race.
+   */
+  acquireLock(name: string, holder: string, leaseMs: number, at: Date = new Date()): boolean {
+    const nowIso = at.toISOString();
+    const expires = new Date(at.getTime() + leaseMs).toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.db.prepare('SELECT holder, expires_at as expiresAt FROM locks WHERE name = ?').get(name) as
+        | { holder: string; expiresAt: string }
+        | undefined;
+      if (existing && existing.expiresAt > nowIso) {
+        this.db.exec('ROLLBACK');
+        return false;
+      }
+      this.db
+        .prepare('INSERT OR REPLACE INTO locks (name, holder, acquired_at, expires_at) VALUES (?,?,?,?)')
+        .run(name, holder, nowIso, expires);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  releaseLock(name: string, holder: string): void {
+    this.db.prepare('DELETE FROM locks WHERE name = ? AND holder = ?').run(name, holder);
   }
 }

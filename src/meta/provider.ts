@@ -62,6 +62,26 @@ export interface MetaProvider {
 
   /** Cumulative insights per ad since the campaign started. */
   insights(adIds: string[]): Promise<AdInsight[]>;
+
+  /**
+   * Retrieve a lead by the id the leadgen webhook delivers.
+   *
+   * The webhook carries a `leadgen_id` and the ad identifiers - not the answers.
+   * The field data is a second, authenticated call, which is also what stops a
+   * forged webhook from injecting a lead: the values come from Meta, not from
+   * the request body.
+   */
+  fetchLead(leadgenId: string): Promise<RetrievedLead>;
+}
+
+export interface RetrievedLead {
+  leadgenId: string;
+  fieldData: Array<{ name: string; values: string[] }>;
+  adId: string | null;
+  adsetId: string | null;
+  campaignId: string | null;
+  formId: string | null;
+  createdTime: string | null;
 }
 
 export interface AdInsight {

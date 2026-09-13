@@ -143,7 +143,31 @@ async function acceptLead(ctx: Context, value: Record<string, unknown>, explicit
   const runId = explicitRunId ?? (value.run_id as string | undefined) ?? ctx.store.latestRun();
   if (!runId) return { status: 'rejected', reason: 'no active run' };
 
-  const raw = value.field_data ? fromMetaLeadgen(value as never) : (value as never);
+  // Meta's leadgen webhook carries a leadgen_id and the ad identifiers, not the
+  // answers - those are a second, authenticated call. That is also what keeps a
+  // forged webhook from injecting a lead: the values come from Meta, not from
+  // the request body. `field_data` inline is accepted too, because the Lead Ads
+  // Testing Tool and manual posts send it that way.
+  let source = value;
+  if (!value.field_data && typeof value.leadgen_id === 'string') {
+    try {
+      const retrieved = await ctx.meta.fetchLead(value.leadgen_id);
+      source = {
+        field_data: retrieved.fieldData,
+        ad_id: retrieved.adId ?? value.ad_id,
+        adset_id: retrieved.adsetId ?? value.adgroup_id,
+        campaign_id: retrieved.campaignId,
+      } as Record<string, unknown>;
+    } catch (err) {
+      ctx.store.audit(runId, 'meta', 'lead.retrieval_failed', {
+        leadgenId: value.leadgen_id,
+        error: (err as Error).message,
+      });
+      return { status: 'rejected', reason: `could not retrieve lead ${value.leadgen_id}: ${(err as Error).message}` };
+    }
+  }
+
+  const raw = source.field_data ? fromMetaLeadgen(source as never) : (source as never);
   const intake = intakeLead(ctx.store, ctx.guardrails, runId, raw);
   if (intake.status !== 'accepted') return intake;
 

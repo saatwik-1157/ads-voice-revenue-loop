@@ -33,14 +33,16 @@ a sale can be attributed to the exact hook that paid for it.
 | C. Human gate #1 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
 | D. Meta execution | [`src/meta/`](src/meta) | API client complete; **untested against a live ad account** |
 | E. Lead handoff | [`src/pipeline/intake.ts`](src/pipeline/intake.ts), [`dispatch.ts`](src/pipeline/dispatch.ts) | complete |
+| E2. Lead retrieval | [`src/server/http.ts`](src/server/http.ts), [`src/meta/api.ts`](src/meta/api.ts) | complete — the webhook carries a `leadgen_id`, the answers are fetched |
 | F. Call result | [`src/pipeline/webhooks.ts`](src/pipeline/webhooks.ts) | complete; payload shape needs confirming against your OmniDimension agent |
 | G. AI review | [`src/economics/`](src/economics) | complete |
 | H. Human gate #2 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
 | (G on a timer) | [`src/scheduler.ts`](src/scheduler.ts) | complete — `cycle`, `schedule`, `serve --schedule` |
 | Creative engine | [`src/creative/`](src/creative) | complete — asset library, generated fallback, upload to Meta |
 
-One thing is deliberately **not** built, because it needs your Page: the Meta instant form itself.
-Create it once and pass its id with `--lead-form`.
+One thing is deliberately **not** built, because it lives on your Page: the Meta instant form itself.
+Create it once and pass its id with `--lead-form` — step by step in
+**[docs/meta-instant-form.md](docs/meta-instant-form.md)**.
 
 ## Quick start
 
@@ -49,7 +51,7 @@ Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is 
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
-npm test                      # 96 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 100 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Credentials
@@ -318,9 +320,11 @@ These are enforced in code, not just documented:
 
 1. Fill in `.env` from `.env.example` and set `FL_MODE=live`. The process refuses to start with
    incomplete credentials rather than half-publishing a campaign.
-2. Create the Meta instant form on your Page and pass its id with `--lead-form`. Artwork is handled
-   for you — drop cleared files in `assets/` or let the generated fallback produce them; either way
-   `brief` uploads them and publishing a creative without an `image_hash` is refused.
+2. Create the Meta instant form on your Page and pass its id with `--lead-form` — the full walkthrough,
+   including the `leads_retrieval` permission and Lead Access grant that leads silently depend on, is
+   in [docs/meta-instant-form.md](docs/meta-instant-form.md). Artwork is handled for you — drop
+   cleared files in `assets/` or let the generated fallback produce them; either way `brief` uploads
+   them and publishing a creative without an `image_hash` is refused.
 3. Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `OMNI_WEBHOOK_SECRET` and `FL_ADMIN_TOKEN`.
    Expose the server (`node src/cli.ts serve`) at a public HTTPS URL and point both webhooks at it:
    - `POST /webhooks/meta` — leadgen (verify subscription at `GET /webhooks/meta`)

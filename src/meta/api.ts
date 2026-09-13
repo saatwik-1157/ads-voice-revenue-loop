@@ -1,4 +1,4 @@
-import type { AdInsight, MetaProvider } from './provider.ts';
+import type { AdInsight, MetaProvider, RetrievedLead } from './provider.ts';
 import { MetaApiError } from './provider.ts';
 import type { CreativeVariant } from '../core/types.ts';
 import { redact } from '../core/util.ts';
@@ -239,6 +239,23 @@ export class MetaApiProvider implements MetaProvider {
 
   async setDailyBudget(adsetId: string, dailyBudgetMinor: number): Promise<void> {
     await this.#post(adsetId, { daily_budget: String(dailyBudgetMinor) });
+  }
+
+  async fetchLead(leadgenId: string): Promise<RetrievedLead> {
+    // Needs the leads_retrieval permission on a Page access token.
+    const res = (await this.#get(leadgenId, {
+      fields: 'id,created_time,field_data,ad_id,adset_id,campaign_id,form_id',
+    })) as Record<string, unknown>;
+
+    return {
+      leadgenId: String(res.id ?? leadgenId),
+      fieldData: (res.field_data as Array<{ name: string; values: string[] }> | undefined) ?? [],
+      adId: (res.ad_id as string | undefined) ?? null,
+      adsetId: (res.adset_id as string | undefined) ?? null,
+      campaignId: (res.campaign_id as string | undefined) ?? null,
+      formId: (res.form_id as string | undefined) ?? null,
+      createdTime: (res.created_time as string | undefined) ?? null,
+    };
   }
 
   async insights(adIds: string[]): Promise<AdInsight[]> {

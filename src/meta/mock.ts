@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { AdInsight, MetaProvider } from './provider.ts';
+import type { AdInsight, MetaProvider, RetrievedLead } from './provider.ts';
 import type { CreativeVariant } from '../core/types.ts';
 
 interface MockState {
@@ -11,6 +11,7 @@ interface MockState {
   adsets: Record<string, { dailyBudgetMinor: number; status: 'ACTIVE' | 'PAUSED'; adIds: string[] }>;
   acc: Record<string, { spendMinor: number; impressions: number; clicks: number; leads: number }>;
   images: Record<string, string>;
+  leads: Record<string, RetrievedLead>;
 }
 
 /**
@@ -35,8 +36,9 @@ export class MockMetaProvider implements MetaProvider {
     this.#path = statePath;
     this.#state = (statePath && existsSync(statePath)
       ? (JSON.parse(readFileSync(statePath, 'utf8')) as MockState)
-      : { seq: 0, prng: seed >>> 0, ads: {}, adsets: {}, acc: {}, images: {} });
+      : { seq: 0, prng: seed >>> 0, ads: {}, adsets: {}, acc: {}, images: {}, leads: {} });
     this.#state.images ??= {};
+    this.#state.leads ??= {};
   }
 
   #save(): void {
@@ -146,6 +148,18 @@ export class MockMetaProvider implements MetaProvider {
         this.#state.acc[adId] = acc;
       }
     }
+    this.#save();
+  }
+
+  async fetchLead(leadgenId: string): Promise<RetrievedLead> {
+    const seeded = this.#state.leads[leadgenId];
+    if (!seeded) throw new Error(`unknown leadgen_id ${leadgenId}`);
+    return seeded;
+  }
+
+  /** Test hook: pretend Meta holds this lead behind the given leadgen_id. */
+  seedLead(lead: RetrievedLead): void {
+    this.#state.leads[lead.leadgenId] = lead;
     this.#save();
   }
 

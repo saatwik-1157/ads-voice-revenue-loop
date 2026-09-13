@@ -49,7 +49,7 @@ Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is 
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2 seconds
-npm test                      # 27 tests covering the guardrails and the loop
+npm test                      # 46 tests covering the guardrails, the loop and the retry paths
 ```
 
 ### Commands
@@ -136,11 +136,25 @@ fault by generating more creative:
 | `low_connect_rate` | leads do not answer | ITERATE — phone capture, calling delay, time of day |
 | `poor_qualification` | they answer but do not qualify | ITERATE — targeting or offer, not more spend |
 | `qualified_no_conversion` | right people, lost at the ask | ITERATE — objections, pricing, trust, script |
-| `profitable_cohort` | ROAS ≥ target on real sales | SCALE — gradual step, 20% holdout retained |
+| `profitable_cohort` | ROAS ≥ target on real sales | SCALE — gradual step, holdout enforced |
 | `unprofitable_cpl` | CPL > 1.5× target after real spend | KILL the cohort |
 
 Each creative is judged separately, but only after it has had a fair share of spend — otherwise the
 engine just kills whichever ad the auction happened to starve.
+
+### Scaling and the holdout
+
+Every ad in one ad set shares a budget, so "reserve 20% for testing" and "do not pause everything
+except the winner" are the same statement. `planScale` treats them that way:
+
+- The step is `maxBudgetStepFactor` (1.3×), capped at `maxDailySpendMinor`, and split into a proven
+  share and a holdout share — reported, audited, and shown on the CLI:
+  `budget raised to INR 650.00/day (INR 520.00 proven + INR 130.00 holdout across 5 test creative(s))`
+- The holdout is drawn from the creatives still being tested (`KEEP`/`ITERATE`). `apply` refuses to
+  pause any of them and writes an `ad.pause_refused` audit event if something tries.
+- **If there is nothing left to test, the scale step goes to gate #2 instead of proceeding.** A
+  cohort with no test budget cannot find its own replacement, so that decision belongs to a person
+  who can decide to add new variants.
 
 ## Safety and platform rules
 
@@ -151,6 +165,11 @@ These are enforced in code, not just documented:
   mimicry, and `MetaProvider` has exactly two implementations so there is no place to add one.
 - **Idempotency everywhere.** Campaign creation, ad creation, call dispatch and inbound webhooks all
   go through a keyed idempotency table, so a retry cannot duplicate a campaign, a call or a payment.
+- **Transient failures are retried; permanent ones are not.** A 429, a 5xx or a dropped connection
+  is retried with exponential backoff and full jitter, honouring `Retry-After` when the server sends
+  one. A 4xx is a bug in the request and is thrown straight at you rather than burning the rate
+  limit. Retrying a write is only safe because the idempotency key rides on every attempt - the
+  tests assert exactly that.
 - **Every webhook signature is verified** before anything happens — an unsigned payload can place
   phone calls and record revenue, so an unset secret fails closed.
 - **Claims are checked before a human is asked to approve them.** A brief containing "guaranteed",

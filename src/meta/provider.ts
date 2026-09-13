@@ -1,4 +1,5 @@
 import type { CreativeVariant } from '../core/types.ts';
+import { isRetryableStatus } from '../core/retry.ts';
 
 /**
  * The only surface the orchestrator is allowed to touch Meta through.
@@ -63,10 +64,18 @@ export interface AdInsight {
 export class MetaApiError extends Error {
   readonly status: number;
   readonly body: string;
-  constructor(status: number, body: string) {
-    super(`Meta API error ${status}: ${body.slice(0, 500)}`);
+  /** 429, 5xx and connection failures are worth another attempt; 4xx is not. */
+  readonly retryable: boolean;
+  readonly retryAfterMs: number | undefined;
+
+  constructor(status: number, body: string, options: { retryAfterMs?: number; cause?: unknown } = {}) {
+    super(status === 0 ? `Meta API unreachable: ${body.slice(0, 500)}` : `Meta API error ${status}: ${body.slice(0, 500)}`, {
+      cause: options.cause,
+    });
     this.name = 'MetaApiError';
     this.status = status;
     this.body = body;
+    this.retryable = isRetryableStatus(status);
+    this.retryAfterMs = options.retryAfterMs;
   }
 }

@@ -1,13 +1,14 @@
 import { createContext, voiceWebhookUrl, type Context } from './orchestrator.ts';
 import { createHttpServer } from './server/http.ts';
 import { generateBrief } from './brief/generator.ts';
-import { approve, budgetChangeNeedsApproval, reject, requestGate1, requestGate2 } from './approvals/gates.ts';
+import { approve, reject, requestGate1, requestGate2 } from './approvals/gates.ts';
 import { publishCampaign, syncInsights } from './meta/publisher.ts';
-import { evaluate, proposeBudget } from './economics/decision.ts';
+import { evaluate, planScale } from './economics/decision.ts';
 import { economicsForRun } from './economics/metrics.ts';
 import { formatBrief, formatEconomics, formatRecommendation } from './report.ts';
 import { runDemo } from './demo/e2e.ts';
 import { money } from './core/util.ts';
+import { pauseKilledAds } from './apply.ts';
 import type { MockMetaProvider } from './meta/mock.ts';
 
 const USAGE = `founder-labs-autopilot - autonomous Ads -> Voice -> Revenue loop
@@ -239,39 +240,49 @@ async function applyDecision(ctx: Context, runId: string): Promise<number> {
     return 0;
   }
 
-  let paused = 0;
-  for (const ad of rec.perAd) {
-    if (ad.decision === 'KILL') {
-      await ctx.meta.setStatus(ad.adId, 'PAUSED');
-      ctx.store.setAdStatus(ad.adId, 'PAUSED');
-      paused += 1;
-    }
-  }
+  const plan = planScale(ctx.guardrails, campaign.dailyBudgetMinor, rec.decision, rec.perAd);
+  const paused = await pauseKilledAds(ctx, runId, rec, plan);
   if (paused) process.stdout.write(`paused ${paused} creative(s)\n`);
+  for (const warning of plan.warnings) process.stdout.write(`WARNING: ${warning}\n`);
 
-  const budget = proposeBudget(ctx.guardrails, campaign.dailyBudgetMinor, rec.decision);
-  if (budget.proposedDailyMinor === campaign.dailyBudgetMinor) {
-    process.stdout.write(`no budget change (${budget.reason})\n`);
+  if (plan.proposedDailyMinor === campaign.dailyBudgetMinor) {
+    process.stdout.write(`no budget change (${plan.reason})\n`);
     return 0;
   }
 
-  const gate = budgetChangeNeedsApproval(ctx.guardrails, campaign.dailyBudgetMinor, budget.proposedDailyMinor);
-  if (gate.needed) {
+  if (plan.needsApproval) {
     const request = requestGate2(
       ctx.store,
       runId,
-      `Raise daily budget to ${money(budget.proposedDailyMinor, ctx.guardrails.currency)}`,
-      { from: campaign.dailyBudgetMinor, to: budget.proposedDailyMinor, reason: gate.reason },
+      `Raise daily budget to ${money(plan.proposedDailyMinor, ctx.guardrails.currency)}`,
+      {
+        from: campaign.dailyBudgetMinor,
+        to: plan.proposedDailyMinor,
+        proven: plan.provenDailyMinor,
+        holdout: plan.holdoutDailyMinor,
+        holdoutAds: plan.holdoutAdIds,
+        reason: plan.reason,
+      },
     );
-    process.stdout.write(`GATE #2 requested ${request.approvalId}: ${gate.reason}\n`);
+    process.stdout.write(`GATE #2 requested ${request.approvalId}: ${plan.reason}\n`);
     process.stdout.write(`approve with: node src/cli.ts approve ${request.approvalId} --by "your name"\n`);
     return 0;
   }
 
-  await ctx.meta.setDailyBudget(campaign.adsetId, budget.proposedDailyMinor);
-  ctx.store.setCampaignBudget(campaign.campaignId, budget.proposedDailyMinor);
-  ctx.store.audit(runId, 'agent', 'budget.raised', { from: campaign.dailyBudgetMinor, to: budget.proposedDailyMinor });
-  process.stdout.write(`budget raised to ${money(budget.proposedDailyMinor, ctx.guardrails.currency)}/day\n`);
+  await ctx.meta.setDailyBudget(campaign.adsetId, plan.proposedDailyMinor);
+  ctx.store.setCampaignBudget(campaign.campaignId, plan.proposedDailyMinor);
+  ctx.store.audit(runId, 'agent', 'budget.raised', {
+    from: campaign.dailyBudgetMinor,
+    to: plan.proposedDailyMinor,
+    provenDailyMinor: plan.provenDailyMinor,
+    holdoutDailyMinor: plan.holdoutDailyMinor,
+    holdoutAdIds: plan.holdoutAdIds,
+  });
+  process.stdout.write(
+    `budget raised to ${money(plan.proposedDailyMinor, ctx.guardrails.currency)}/day ` +
+      `(${money(plan.provenDailyMinor, ctx.guardrails.currency)} proven + ` +
+      `${money(plan.holdoutDailyMinor, ctx.guardrails.currency)} holdout across ${plan.holdoutAdIds.length} test creative(s))\n`,
+  );
   return 0;
 }
 

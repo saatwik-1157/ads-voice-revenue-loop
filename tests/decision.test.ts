@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/store/db.ts';
 import { defaultGuardrails } from '../src/config/guardrails.ts';
 import { generateBrief } from '../src/brief/generator.ts';
-import { evaluate, proposeBudget } from '../src/economics/decision.ts';
+import { evaluate, planScale } from '../src/economics/decision.ts';
 import { economicsForRun } from '../src/economics/metrics.ts';
 import { intakeLead } from '../src/pipeline/intake.ts';
 import { handleCallWebhook } from '../src/pipeline/webhooks.ts';
@@ -114,9 +114,12 @@ test('a profitable cohort scales, and the step stays inside the cap', async () =
   assert.equal(rec.signal, 'profitable_cohort');
   assert.equal(rec.decision, 'SCALE');
 
-  const budget = proposeBudget(G, 100000, rec.decision);
-  assert.ok(budget.proposedDailyMinor > 100000);
-  assert.ok(budget.proposedDailyMinor <= G.maxDailySpendMinor, 'a scale step must never exceed the daily cap');
+  const plan = planScale(G, 100000, rec.decision, [
+    { adId: 'ad_1', decision: 'SCALE' },
+    { adId: 'ad_2', decision: 'KEEP' },
+  ]);
+  assert.ok(plan.proposedDailyMinor > 100000);
+  assert.ok(plan.proposedDailyMinor <= G.maxDailySpendMinor, 'a scale step must never exceed the daily cap');
   store.close();
 });
 

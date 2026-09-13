@@ -165,18 +165,18 @@ test('an ambiguous niche carries its flags through to gate #1', () => {
   const { chosen, reviewFlags } = pickNiche(
     [
       {
-        name: 'Dental clinic patient reactivation',
+        name: 'Affordable housing project marketing',
         urgency: 3,
         ticketSize: 5,
         phoneCloseable: 3,
         reachability: 3,
         offerSimplicity: 3,
-        notes: 'good ticket, slow cycle',
+        notes: 'committee buying slows the close',
       },
     ],
     G,
   );
-  assert.ok(reviewFlags.length > 0, 'dental/clinic is health-adjacent and wants a human');
+  assert.ok(reviewFlags.length > 0, 'bare "housing" is ambiguous and wants a human');
 
   const brief = {
     niche: chosen,
@@ -189,8 +189,27 @@ test('an ambiguous niche carries its flags through to gate #1', () => {
   const gate = requestGate1(store, G, runId, brief, 50000, reviewFlags);
   assert.deepEqual(gate.reviewFlags, reviewFlags);
   assert.match(gate.summary, /CONFIRM/);
-  assert.match(gate.summary, /health_adjacent/);
+  assert.match(gate.summary, /housing_adjacent/);
   store.close();
+});
+
+test('naming a clinic is not a health claim, so it does not need a human', () => {
+  // A clinic is an ordinary local business to sell services to. The claim
+  // checker catches an unsupportable health promise wherever it appears; the
+  // niche name is the wrong place to look for one.
+  for (const text of [
+    'Dental clinic patient reactivation',
+    'Physiotherapy clinic front-desk automation',
+    'Veterinary clinic appointment reminders',
+  ]) {
+    assert.equal(classifyText(text, RULES).verdict, 'allowed', text);
+  }
+});
+
+test('the health terms that remain still route to a human', () => {
+  for (const text of ['Weight loss coaching programme', 'Cosmetic dentistry marketing', 'Supplement subscriptions']) {
+    assert.equal(classifyText(text, RULES).verdict, 'review', text);
+  }
 });
 
 test('the seed candidates all survive the rules, and the solar one is no longer rejected', async () => {

@@ -13,6 +13,16 @@ import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler }
 import { budgetRaiseTooSoon } from '../src/apply.ts';
 import { now } from '../src/core/util.ts';
 import type { Context } from '../src/orchestrator.ts';
+import type { Brief } from '../src/core/types.ts';
+
+/** Publishing requires uploaded artwork; these tests are not about that step. */
+function stampAssets(brief: Brief): Brief {
+  for (const creative of brief.creatives) {
+    creative.assetRef = `hash_${creative.creativeId}`;
+    creative.assetProvenance = 'manual';
+  }
+  return brief;
+}
 
 const G = {
   ...defaultGuardrails,
@@ -32,6 +42,7 @@ async function liveRun(overrides: Partial<typeof G> = {}): Promise<{ ctx: Contex
   } as unknown as Context;
 
   const { brief } = await generateBrief(guardrails);
+  stampAssets(brief);
   const runId = store.createRun(brief.niche.name);
   store.saveBrief(runId, brief);
   approve(store, requestGate1(store, guardrails, runId, brief, 50000).approvalId, 'test');

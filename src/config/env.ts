@@ -36,6 +36,10 @@ export interface Env {
   omni: { apiKey: string; agentId: string; baseUrl: string; webhookSecret: string };
   anthropicKey: string;
   dbPath: string;
+  /** Directory of cleared artwork; used when it contains any images. */
+  assetDir: string;
+  /** Where produced creatives are written so a human can look before approving. */
+  previewDir: string;
 }
 
 export function env(): Env {
@@ -63,6 +67,8 @@ export function env(): Env {
     },
     anthropicKey: process.env.ANTHROPIC_API_KEY ?? '',
     dbPath: process.env.FL_DB_PATH ?? 'data/autopilot.db',
+    assetDir: process.env.FL_ASSET_DIR ?? 'assets',
+    previewDir: process.env.FL_PREVIEW_DIR ?? 'data/previews',
   };
 }
 

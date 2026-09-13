@@ -53,6 +53,7 @@ export async function generateBrief(g: Guardrails, options: BriefOptions = {}): 
     ...c,
     creativeId: id('cr'),
     assetRef: null,
+    assetProvenance: null,
   }));
 
   const offer: Offer = { ...drafted.offer, pricePointMinor: dealValueMinor, currency: g.currency };

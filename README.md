@@ -37,11 +37,10 @@ a sale can be attributed to the exact hook that paid for it.
 | G. AI review | [`src/economics/`](src/economics) | complete |
 | H. Human gate #2 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
 | (G on a timer) | [`src/scheduler.ts`](src/scheduler.ts) | complete — `cycle`, `schedule`, `serve --schedule` |
+| Creative engine | [`src/creative/`](src/creative) | complete — asset library, generated fallback, upload to Meta |
 
-Two things are deliberately **not** built, because they need your accounts to be meaningful:
-creative asset generation (an ad creative needs a real `image_hash`/`video_id` — the publisher
-refuses to publish a creative with no `assetRef`), and the Meta instant-form itself (pass its id with
-`--lead-form` once you have created one on your Page).
+One thing is deliberately **not** built, because it needs your Page: the Meta instant form itself.
+Create it once and pass its id with `--lead-form`.
 
 ## Quick start
 
@@ -50,7 +49,7 @@ Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is 
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2 seconds
-npm test                      # 76 tests covering the guardrails, the loop, retries and the scheduler
+npm test                      # 94 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Commands
@@ -59,6 +58,7 @@ npm test                      # 76 tests covering the guardrails, the loop, retr
 node src/cli.ts guardrails                          # print the active control layer
 node src/cli.ts brief --deal-value 5000             # phase B, opens gate #1
 node src/cli.ts approvals                           # what is waiting on a human
+node src/cli.ts assets [runId] [--force]            # produce + upload artwork
 node src/cli.ts approve <approvalId> --by "Nitesh"  # phase C
 node src/cli.ts publish <runId> --budget 700 --days 5 --activate
 node src/cli.ts sync <runId>                        # pull Meta insights
@@ -188,6 +188,41 @@ except the winner" are the same statement. `planScale` treats them that way:
   cohort with no test budget cannot find its own replacement, so that decision belongs to a person
   who can decide to add new variants.
 
+## Where the artwork comes from
+
+An ad creative needs a real `image_hash`, so `publish` refuses to run while any variant has none.
+Two providers fill that in, behind one interface:
+
+- **`assets/` — the approved asset library.** Drop cleared PNG or JPEG artwork in and it is used.
+  This is what you actually run: a person made the artwork, owns or licensed it, and is happy for it
+  to carry a budget. A filename naming an angle serves that angle (`speed-01.png` → the "Speed"
+  variants); everything else comes from the pool in a stable order, so a variant keeps its image
+  across republishes. Format, dimensions and size are read from the file header — not the extension —
+  before anything is uploaded, because finding out from Meta after the fact is slow and confusing.
+- **The generated fallback.** While the library is empty, a plain text-forward vertical card is
+  rendered per variant (1080×1920, Reels safe areas respected, one palette per angle). Zero
+  dependencies — Node has no rasterizer, so this is a small PNG encoder over built-in `zlib` plus an
+  embedded 5×7 bitmap font. It exists for the same reason the offline brief writer does: so the loop
+  runs and a real delivery test can go out before anyone opens a design tool.
+
+**Claude does not generate images** — the Anthropic API is text-out — so there is no AI image
+generation here. Adding one (any image API) means implementing `CreativeAssetProvider` and changing
+nothing else.
+
+Artwork is produced **before** gate #1, not after it, because the gate asks a person to approve the
+creative and they cannot do that without seeing it. Previews are written to `data/previews/<runId>/`,
+the gate summary reports what produced each image, and generated artwork adds an explicit line to
+confirm:
+
+```
+Artwork: 6 rendered
+CONFIRM before approving (1):
+  - artwork is auto-generated, not cleared by a person - look at the previews before approving
+```
+
+Uploads are keyed on the image bytes, so a retried publish reuses the upload while genuinely new
+artwork gets a new hash. One unusable file costs you that one ad, not the whole test.
+
 ## Running it unattended
 
 `sync` -> `review` -> `apply` is the loop, and until something runs it on a timer the "autonomous"
@@ -300,6 +335,7 @@ src/
   pipeline/    lead intake, dispatch, webhooks
   economics/   funnel metrics, decision engine
   approvals/   human gates #1 and #2
+  creative/    asset library, generated fallback, PNG encoder, upload pipeline
   scheduler.ts the unattended evaluation cycle and its loop
   apply.ts     the one path both `apply` and the scheduler act through
   server/      webhook middleware

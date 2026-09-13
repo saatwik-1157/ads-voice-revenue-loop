@@ -16,7 +16,7 @@ export const MODEL = 'claude-opus-5';
 
 export interface DraftedBrief {
   offer: Offer;
-  creatives: Array<Omit<CreativeVariant, 'creativeId' | 'assetRef'>>;
+  creatives: Array<Omit<CreativeVariant, 'creativeId' | 'assetRef' | 'assetProvenance'>>;
   leadFormCopy: string;
   callScript: CallScript;
 }

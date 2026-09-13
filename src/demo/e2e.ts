@@ -8,9 +8,10 @@ import { publishCampaign, syncInsights } from '../meta/publisher.ts';
 import { intakeLead } from '../pipeline/intake.ts';
 import { dispatchLead } from '../pipeline/dispatch.ts';
 import { handleCallWebhook } from '../pipeline/webhooks.ts';
-import { evaluate, proposeBudget } from '../economics/decision.ts';
+import { evaluate, planScale } from '../economics/decision.ts';
 import { formatBrief, formatRecommendation } from '../report.ts';
 import { money } from '../core/util.ts';
+import { pauseKilledAds } from '../apply.ts';
 
 /**
  * The 48-hour MVP, compressed into one command.
@@ -127,34 +128,34 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
   say(indent(formatRecommendation(rec, g)));
 
   say('\nPHASE H  human gate #2');
-  const budget = proposeBudget(g, published.campaign.dailyBudgetMinor, rec.decision);
-  if (budget.proposedDailyMinor !== published.campaign.dailyBudgetMinor) {
-    if (budget.needsApproval) {
-      const gate2 = requestGate2(store, runId, `Raise daily budget to ${money(budget.proposedDailyMinor, g.currency)}`, {
+  const plan = planScale(g, published.campaign.dailyBudgetMinor, rec.decision, rec.perAd);
+  if (plan.proposedDailyMinor !== published.campaign.dailyBudgetMinor) {
+    if (plan.needsApproval) {
+      const gate2 = requestGate2(store, runId, `Raise daily budget to ${money(plan.proposedDailyMinor, g.currency)}`, {
         from: published.campaign.dailyBudgetMinor,
-        to: budget.proposedDailyMinor,
-        reason: budget.reason,
+        to: plan.proposedDailyMinor,
+        proven: plan.provenDailyMinor,
+        holdout: plan.holdoutDailyMinor,
+        reason: plan.reason,
       });
-      say(`  approval ${gate2.approvalId} pending: ${gate2.summary} (${budget.reason})`);
+      say(`  approval ${gate2.approvalId} pending: ${gate2.summary} (${plan.reason})`);
       say('  the agent stops here until a human decides.');
     } else {
-      await meta.setDailyBudget(published.campaign.adsetId, budget.proposedDailyMinor);
-      store.setCampaignBudget(published.campaign.campaignId, budget.proposedDailyMinor);
-      say(`  budget raised to ${money(budget.proposedDailyMinor, g.currency)}/day within the approved step (${budget.reason})`);
+      await meta.setDailyBudget(published.campaign.adsetId, plan.proposedDailyMinor);
+      store.setCampaignBudget(published.campaign.campaignId, plan.proposedDailyMinor);
+      say(`  budget raised to ${money(plan.proposedDailyMinor, g.currency)}/day within the approved step (${plan.reason})`);
+      say(
+        `  holdout reserved: ${money(plan.holdoutDailyMinor, g.currency)}/day across ${plan.holdoutAdIds.length} test creative(s)`,
+      );
     }
   } else {
-    say(`  no budget change proposed (${budget.reason})`);
+    say(`  no budget change proposed (${plan.reason})`);
   }
+  for (const warning of plan.warnings) say(`  WARNING: ${warning}`);
 
-  // Apply the per-creative verdicts the agent is allowed to act on alone.
-  let paused = 0;
-  for (const adDecision of rec.perAd) {
-    if (adDecision.decision === 'KILL') {
-      await meta.setStatus(adDecision.adId, 'PAUSED');
-      store.setAdStatus(adDecision.adId, 'PAUSED');
-      paused += 1;
-    }
-  }
+  // Apply the per-creative verdicts the agent is allowed to act on alone,
+  // leaving the holdout creatives running.
+  const paused = await pauseKilledAds(ctx, runId, rec, plan);
   if (paused) say(`  paused ${paused} underperforming creative(s) inside the existing cap`);
 
   say('\nSUCCESS CONDITION');

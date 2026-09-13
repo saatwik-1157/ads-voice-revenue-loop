@@ -1,4 +1,5 @@
 import type { Brief, Lead } from '../core/types.ts';
+import { isRetryableStatus } from '../core/retry.ts';
 
 /**
  * Outbound voice dispatch. Whatever identifiers go in as metadata come back on
@@ -21,9 +22,17 @@ export interface DispatchInput {
 
 export class VoiceApiError extends Error {
   readonly status: number;
-  constructor(status: number, body: string) {
-    super(`Voice API error ${status}: ${body.slice(0, 500)}`);
+  readonly retryable: boolean;
+  readonly retryAfterMs: number | undefined;
+
+  constructor(status: number, body: string, options: { retryAfterMs?: number; cause?: unknown } = {}) {
+    super(
+      status === 0 ? `Voice API unreachable: ${body.slice(0, 500)}` : `Voice API error ${status}: ${body.slice(0, 500)}`,
+      { cause: options.cause },
+    );
     this.name = 'VoiceApiError';
     this.status = status;
+    this.retryable = isRetryableStatus(status);
+    this.retryAfterMs = options.retryAfterMs;
   }
 }

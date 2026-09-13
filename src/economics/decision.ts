@@ -187,20 +187,81 @@ function adRationale(e: Economics, g: Guardrails, brief: Brief): string {
   ].join(', ');
 }
 
+export interface ScalePlan {
+  proposedDailyMinor: number;
+  /** The share of the daily budget backing creatives that have proven out. */
+  provenDailyMinor: number;
+  /** Reserved for creatives still being tested. Zero means there is no holdout. */
+  holdoutDailyMinor: number;
+  /**
+   * Ads that must stay ACTIVE to hold the test budget open. `apply` refuses to
+   * pause these, which is what turns the holdout from a slogan into a rule.
+   */
+  holdoutAdIds: string[];
+  needsApproval: boolean;
+  reason: string;
+  warnings: string[];
+}
+
 /**
- * Translate a SCALE recommendation into a concrete budget proposal, capped by
- * the control layer and routed to gate #2 when it is a material increase.
+ * Translate a SCALE recommendation into a concrete budget plan.
+ *
+ * Capped by the control layer, routed to gate #2 when it is a material increase,
+ * and - the part that is actually enforced elsewhere - it reserves a holdout.
+ *
+ * A holdout only means something if there are unproven creatives left running to
+ * receive it: every ad in one ad set shares the budget, so "reserve 20% for
+ * testing" is the same statement as "do not pause everything except the winner".
+ * When nothing is left to test, scaling would put the entire budget behind a
+ * single creative with no way to find its replacement, so the plan goes to a
+ * human instead of proceeding quietly.
  */
-export function proposeBudget(
+export function planScale(
   g: Guardrails,
   currentDailyMinor: number,
   decision: Decision,
-): { proposedDailyMinor: number; needsApproval: boolean; reason: string } {
-  if (decision !== 'SCALE') {
-    return { proposedDailyMinor: currentDailyMinor, needsApproval: false, reason: 'no increase proposed' };
-  }
+  perAd: Array<{ adId: string; decision: Decision }> = [],
+): ScalePlan {
+  const noChange: ScalePlan = {
+    proposedDailyMinor: currentDailyMinor,
+    provenDailyMinor: currentDailyMinor,
+    holdoutDailyMinor: 0,
+    holdoutAdIds: [],
+    needsApproval: false,
+    reason: 'no increase proposed',
+    warnings: [],
+  };
+  if (decision !== 'SCALE') return noChange;
+
   const stepped = Math.round(currentDailyMinor * g.maxBudgetStepFactor);
   const proposed = Math.min(stepped, g.maxDailySpendMinor);
+
+  // The holdout is whatever is still being tested: anything not already proven
+  // and not condemned.
+  const holdoutAdIds = perAd.filter((ad) => ad.decision === 'KEEP' || ad.decision === 'ITERATE').map((ad) => ad.adId);
+  const holdoutDailyMinor = holdoutAdIds.length > 0 ? Math.round(proposed * g.holdoutBudgetShare) : 0;
+
   const gate = budgetChangeNeedsApproval(g, currentDailyMinor, proposed);
-  return { proposedDailyMinor: proposed, needsApproval: gate.needed, reason: gate.reason };
+  const warnings: string[] = [];
+  let needsApproval = gate.needed;
+  let reason = gate.reason;
+
+  if (holdoutAdIds.length === 0) {
+    needsApproval = true;
+    reason =
+      'no holdout available: every non-winning creative is spent or killed, so this step would put the whole budget behind one creative';
+    warnings.push(
+      `Generate new variants before scaling again - a cohort with no test budget cannot find its own replacement.`,
+    );
+  }
+
+  return {
+    proposedDailyMinor: proposed,
+    provenDailyMinor: proposed - holdoutDailyMinor,
+    holdoutDailyMinor,
+    holdoutAdIds,
+    needsApproval,
+    reason,
+    warnings,
+  };
 }

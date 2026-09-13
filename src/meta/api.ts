@@ -2,6 +2,7 @@ import type { AdInsight, MetaProvider } from './provider.ts';
 import { MetaApiError } from './provider.ts';
 import type { CreativeVariant } from '../core/types.ts';
 import { redact } from '../core/util.ts';
+import { parseRetryAfter, withRetry, type RetryOptions } from '../core/retry.ts';
 
 /**
  * Meta Marketing API client - the authorized interface.
@@ -15,8 +16,16 @@ export class MetaApiProvider implements MetaProvider {
   readonly #token: string;
   readonly #accountId: string;
   readonly #version: string;
+  readonly #retry: RetryOptions;
+  readonly #fetch: typeof fetch;
 
-  constructor(opts: { accessToken: string; adAccountId: string; apiVersion: string }) {
+  constructor(opts: {
+    accessToken: string;
+    adAccountId: string;
+    apiVersion: string;
+    retry?: RetryOptions;
+    fetchImpl?: typeof fetch;
+  }) {
     if (!opts.accessToken) throw new Error('MetaApiProvider requires an access token');
     if (!/^act_\d+$/.test(opts.adAccountId)) {
       throw new Error(`META_AD_ACCOUNT_ID must look like "act_1234567890", got "${opts.adAccountId}"`);
@@ -24,6 +33,33 @@ export class MetaApiProvider implements MetaProvider {
     this.#token = opts.accessToken;
     this.#accountId = opts.adAccountId;
     this.#version = opts.apiVersion;
+    this.#fetch = opts.fetchImpl ?? fetch;
+    this.#retry = {
+      onRetry: (info) => {
+        process.stderr.write(
+          `[meta] ${info.operation} failed (${info.error.message.slice(0, 120)}); retry ${info.attempt}/${info.attempts - 1} in ${info.delayMs}ms\n`,
+        );
+      },
+      ...opts.retry,
+    };
+  }
+
+  /** One HTTP round trip, normalized into a MetaApiError that knows if it is transient. */
+  async #send(url: string | URL, init: RequestInit): Promise<string> {
+    let res: Response;
+    try {
+      res = await this.#fetch(url, init);
+    } catch (err) {
+      // DNS failure, connection reset, TLS error - no response at all.
+      throw new MetaApiError(0, (err as Error).message, { cause: err });
+    }
+    const text = await res.text();
+    if (!res.ok) {
+      throw new MetaApiError(res.status, redact(text), {
+        retryAfterMs: parseRetryAfter(res.headers.get('retry-after')),
+      });
+    }
+    return text;
   }
 
   async #post(path: string, body: Record<string, unknown>, idempotencyKey?: string): Promise<Record<string, string>> {
@@ -37,22 +73,27 @@ export class MetaApiProvider implements MetaProvider {
       'Content-Type': 'application/x-www-form-urlencoded',
       Authorization: `Bearer ${this.#token}`,
     };
-    // Meta honours this header on ad-object creation endpoints; sending it on
-    // every write is harmless and makes retries safe by default.
+    // Meta honours this header on ad-object creation endpoints. It is what makes
+    // the retry below safe: a replayed create returns the original object rather
+    // than making a second campaign.
     if (idempotencyKey) headers['X-Business-Idempotency-Key'] = idempotencyKey;
 
-    const res = await fetch(url, { method: 'POST', headers, body: form });
-    const text = await res.text();
-    if (!res.ok) throw new MetaApiError(res.status, redact(text));
+    const text = await withRetry(
+      `POST ${path}`,
+      () => this.#send(url, { method: 'POST', headers, body: form }),
+      this.#retry,
+    );
     return JSON.parse(text) as Record<string, string>;
   }
 
   async #get(path: string, params: Record<string, string>): Promise<Record<string, unknown>> {
     const url = new URL(`https://graph.facebook.com/${this.#version}/${path}`);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${this.#token}` } });
-    const text = await res.text();
-    if (!res.ok) throw new MetaApiError(res.status, redact(text));
+    const text = await withRetry(
+      `GET ${path}`,
+      () => this.#send(url, { headers: { Authorization: `Bearer ${this.#token}` } }),
+      this.#retry,
+    );
     return JSON.parse(text) as Record<string, unknown>;
   }
 

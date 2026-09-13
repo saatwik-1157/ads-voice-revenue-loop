@@ -1,5 +1,6 @@
 import type { NicheCandidate, ScoredNiche } from '../core/types.ts';
-import { assertNicheAllowed, type Guardrails } from '../config/guardrails.ts';
+import { exclusionRules, type Guardrails } from '../config/guardrails.ts';
+import { classifyFields, describeMatch } from '../config/exclusions.ts';
 
 /**
  * Step 01 of the playbook: score niches, pick one.
@@ -29,23 +30,47 @@ export function scoreNiche(candidate: NicheCandidate): ScoredNiche {
   return { ...candidate, score: Number(score.toFixed(2)), breakdown };
 }
 
+export interface NichePick {
+  chosen: ScoredNiche;
+  ranked: ScoredNiche[];
+  rejected: Array<{ name: string; reason: string }>;
+  /**
+   * Ambiguous matches on the chosen niche. Not a rejection - gate #1 shows
+   * these to the person approving the campaign.
+   */
+  reviewFlags: string[];
+}
+
 /**
- * Rank candidates and return the best one that survives the exclusion list.
- * Excluded niches are dropped here rather than later, so an off-limits market
- * never reaches a human for approval in the first place.
+ * Rank candidates and return the best one the exclusion rules permit.
+ *
+ * A hard-blocked niche is dropped here, so an off-limits market never reaches a
+ * human for approval. An ambiguous one is kept and flagged instead - dropping it
+ * would quietly lose legitimate business, and the approval gate is the right
+ * place for a judgement call.
  */
-export function pickNiche(candidates: NicheCandidate[], g: Guardrails): { chosen: ScoredNiche; ranked: ScoredNiche[]; rejected: Array<{ name: string; reason: string }> } {
+export function pickNiche(candidates: NicheCandidate[], g: Guardrails): NichePick {
   const rejected: Array<{ name: string; reason: string }> = [];
-  const eligible: NicheCandidate[] = [];
+  const eligible: Array<{ candidate: NicheCandidate; flags: string[] }> = [];
 
   for (const c of candidates) {
-    try {
-      assertNicheAllowed(g, c.name);
-      assertNicheAllowed(g, c.notes);
-      eligible.push(c);
-    } catch (err) {
-      rejected.push({ name: c.name, reason: (err as Error).message });
+    // The niche's name and offer describe what is being sold; the notes are the
+    // agent's own commentary about it, so a term there is weaker evidence and
+    // classifyFields caps it at review rather than blocking.
+    const { verdict, matches } = classifyFields(
+      [
+        ['name', c.name],
+        ['notes', c.notes],
+      ],
+      exclusionRules(g),
+    );
+
+    if (verdict === 'blocked') {
+      const blocking = matches.filter((m) => m.severity === 'block');
+      rejected.push({ name: c.name, reason: blocking.map(describeMatch).join('; ') });
+      continue;
     }
+    eligible.push({ candidate: c, flags: matches.map(describeMatch) });
   }
 
   if (eligible.length === 0) {
@@ -55,8 +80,17 @@ export function pickNiche(candidates: NicheCandidate[], g: Guardrails): { chosen
     );
   }
 
-  const ranked = eligible.map(scoreNiche).sort((a, b) => b.score - a.score);
-  return { chosen: ranked[0]!, ranked, rejected };
+  const scored = eligible
+    .map((entry) => ({ scored: scoreNiche(entry.candidate), flags: entry.flags }))
+    .sort((a, b) => b.scored.score - a.scored.score);
+  const winner = scored[0]!;
+
+  return {
+    chosen: winner.scored,
+    ranked: scored.map((entry) => entry.scored),
+    rejected,
+    reviewFlags: winner.flags,
+  };
 }
 
 function clamp1to5(value: number): number {

@@ -49,7 +49,7 @@ Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is 
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2 seconds
-npm test                      # 46 tests covering the guardrails, the loop and the retry paths
+npm test                      # 61 tests covering the guardrails, the loop and the retry paths
 ```
 
 ### Commands
@@ -120,8 +120,34 @@ What that buys you, concretely:
 - **The stop-loss outranks every other signal.** Once net loss reaches it, the only recommendation
   is KILL, and it is flagged as needing a human.
 - **No calls outside the calling window**, none to a suppressed number, none past the daily ceiling.
-- **Excluded niches are dropped before scoring**, so an off-limits market never reaches a human for
+- **Blocked niches are dropped before scoring**, so an off-limits market never reaches a human for
   approval. Special ad categories are declared `NONE` and blocked by default.
+
+### Niche exclusions
+
+A flat substring list gets this wrong in both directions: `includes('housing')` rejects "solar panel
+cleaning for **housing societies**" — which sells a cleaning service to an apartment association, not
+housing — while `includes('loan')` also fires on "Sloan". So the rules in
+[`src/config/exclusions.ts`](src/config/exclusions.ts) are structured, matched on word boundaries,
+and have **three** outcomes rather than two:
+
+| Verdict | Meaning | What happens |
+|---|---|---|
+| `blocked` | the term names a restricted **offer** — "home loan", "rental listing", "casino" | candidate dropped before scoring; `publishCampaign` throws |
+| `review` | the term is real but ambiguous — "housing", "credit", "dental" | candidate kept, flagged, and shown at gate #1 for a person to confirm |
+| `allowed` | nothing fired, or an exemption covered it | proceeds normally |
+
+The third outcome is the point. Some of these genuinely are judgement calls, and this system already
+has a human gate — so it routes there instead of guessing. Supporting details:
+
+- **Exemptions are local.** "housing society" stops `housing` from firing, but
+  "rental listings promoted to housing societies" is still blocked — the exemption masks its own
+  span, not the whole string.
+- **Commentary is weaker evidence than the name.** A restricted term in the agent's own notes about
+  a niche ("avoid medical treatment claims here") is capped at `review`; the same term in the niche
+  name blocks.
+- **Operator terms stay blunt.** Anything you list in `excludedNiches` is a hard block, matched on
+  word boundaries.
 
 ## The decision engine
 

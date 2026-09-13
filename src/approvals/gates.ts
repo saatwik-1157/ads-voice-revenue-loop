@@ -11,7 +11,14 @@ export interface GateRequest {
   approvalId: string;
   gate: string;
   summary: string;
+  /** Hard problems with the brief. The gate cannot be approved past these. */
   blocking: string[];
+  /**
+   * Ambiguous exclusion matches. These are a judgement call, not a defect - the
+   * approver is being asked to confirm them, which is the whole reason the
+   * classifier has a third outcome instead of guessing.
+   */
+  reviewFlags: string[];
 }
 
 /**
@@ -21,7 +28,14 @@ export interface GateRequest {
  * `blocking` is a hard problem with the brief itself: the gate can be opened
  * only after the brief is regenerated, not by approving past it.
  */
-export function requestGate1(store: Store, g: Guardrails, runId: string, brief: Brief, dailyBudgetMinor: number): GateRequest {
+export function requestGate1(
+  store: Store,
+  g: Guardrails,
+  runId: string,
+  brief: Brief,
+  dailyBudgetMinor: number,
+  reviewFlags: string[] = [],
+): GateRequest {
   const claimIssues = checkClaims(brief, g);
   const drift = checkPromiseAlignment(brief);
   const blocking = [
@@ -41,10 +55,24 @@ export function requestGate1(store: Store, g: Guardrails, runId: string, brief: 
     `Target:  CPL <= ${money(brief.successMetrics.targetCplMinor, g.currency)}, ROAS >= ${brief.successMetrics.targetRoas}`,
   ].join('\n');
 
-  const approvalId = store.requestApproval(runId, GATE_1, 'Publish first test campaign', JSON.stringify({ summary, blocking }));
+  const full = reviewFlags.length
+    ? [
+        summary,
+        '',
+        `CONFIRM: ${reviewFlags.length} ambiguous exclusion match(es) - approve only if none describes the offer:`,
+        ...reviewFlags.map((f) => `  - ${f}`),
+      ].join('\n')
+    : summary;
+
+  const approvalId = store.requestApproval(
+    runId,
+    GATE_1,
+    'Publish first test campaign',
+    JSON.stringify({ summary: full, blocking, reviewFlags }),
+  );
   store.setRunState(runId, 'awaiting_gate1');
-  store.audit(runId, 'agent', 'gate1.requested', { approvalId, blocking });
-  return { approvalId, gate: GATE_1, summary, blocking };
+  store.audit(runId, 'agent', 'gate1.requested', { approvalId, blocking, reviewFlags });
+  return { approvalId, gate: GATE_1, summary: full, blocking, reviewFlags };
 }
 
 /**
@@ -57,7 +85,7 @@ export function requestGate1(store: Store, g: Guardrails, runId: string, brief: 
 export function requestGate2(store: Store, runId: string, subject: string, detail: Record<string, unknown>): GateRequest {
   const approvalId = store.requestApproval(runId, GATE_2, subject, JSON.stringify(detail));
   store.audit(runId, 'agent', 'gate2.requested', { approvalId, subject, detail });
-  return { approvalId, gate: GATE_2, summary: subject, blocking: [] };
+  return { approvalId, gate: GATE_2, summary: subject, blocking: [], reviewFlags: [] };
 }
 
 export function approve(store: Store, approvalId: string, approver: string): boolean {

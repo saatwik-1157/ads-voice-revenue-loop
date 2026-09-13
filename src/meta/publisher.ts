@@ -56,9 +56,11 @@ export async function publishCampaign(
 
   if (!g.specialAdCategoriesAllowed) {
     // Special ad categories (credit, employment, housing, social issues) carry
-    // their own targeting restrictions. We declare NONE, which means the agent
-    // must never pick a niche that belongs in one - enforced by excludedNiches.
-    assertNicheAllowed(g, brief.offer.icp);
+    // their own targeting restrictions. We declare NONE, so the offer itself
+    // must not belong to one. Ambiguous matches were already shown to a human
+    // at gate #1; only hard blocks stop the publish here.
+    assertNicheAllowed(g, brief.offer.icp, 'offer');
+    assertNicheAllowed(g, brief.offer.outcome, 'offer');
   }
 
   const start = new Date();

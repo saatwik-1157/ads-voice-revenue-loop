@@ -135,9 +135,11 @@ export async function draftBrief(
   niche: ScoredNiche,
   g: Guardrails,
   maxTestBudget: string,
-  apiKey: string,
+  apiKey?: string,
 ): Promise<DraftedBrief> {
-  const client = new Anthropic({ apiKey });
+  // No explicit key means let the SDK resolve credentials itself - env var,
+  // auth token, or an `ant auth login` profile.
+  const client = apiKey ? new Anthropic({ apiKey }) : new Anthropic();
 
   const response = await client.messages.create({
     model: MODEL,

@@ -72,6 +72,21 @@ export function env(): Env {
   };
 }
 
+/**
+ * Can we reach Claude at all?
+ *
+ * An unset ANTHROPIC_API_KEY does not mean there are no credentials: the SDK
+ * also resolves ANTHROPIC_AUTH_TOKEN and an `ant auth login` profile on disk.
+ * Gating the model path on the API key alone silently downgraded anyone who had
+ * authenticated another way to the offline writer, with no hint as to why.
+ */
+export function hasAnthropicCredentials(e: Env): boolean {
+  if (e.anthropicKey) return true;
+  if (process.env.ANTHROPIC_AUTH_TOKEN) return true;
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  return Boolean(home && existsSync(resolve(home, '.config', 'anthropic')));
+}
+
 /** Fail fast rather than half-publishing a campaign with missing credentials. */
 export function assertLiveCredentials(e: Env): void {
   const missing: string[] = [];

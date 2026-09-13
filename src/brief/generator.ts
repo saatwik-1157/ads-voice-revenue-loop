@@ -17,7 +17,10 @@ export interface BriefResult {
 
 export interface BriefOptions {
   candidates?: NicheCandidate[];
+  /** Explicit key. Omit to let the SDK resolve credentials itself. */
   anthropicKey?: string;
+  /** Attempt the model at all. Defaults to false, so an offline run stays offline. */
+  useModel?: boolean;
   /** Expected revenue per closed sale; drives the target CAC and ROAS. */
   dealValueMinor?: number;
 }
@@ -36,7 +39,7 @@ export async function generateBrief(g: Guardrails, options: BriefOptions = {}): 
 
   let drafted: DraftedBrief;
   let source: Brief['source'] = 'llm';
-  if (options.anthropicKey) {
+  if (options.useModel ?? Boolean(options.anthropicKey)) {
     try {
       drafted = await draftBrief(chosen, g, money(g.maxTestBudgetMinor, g.currency), options.anthropicKey);
     } catch (err) {

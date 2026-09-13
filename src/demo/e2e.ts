@@ -1,5 +1,6 @@
 import type { Context } from '../orchestrator.ts';
 import { exclusionRules } from '../config/guardrails.ts';
+import { hasAnthropicCredentials } from '../config/env.ts';
 import type { MockMetaProvider } from '../meta/mock.ts';
 import type { MockVoiceProvider } from '../voice/mock.ts';
 import type { Brief } from '../core/types.ts';
@@ -43,6 +44,7 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
   say('\nPHASE B  AI brief');
   const { brief, claimIssues, promiseDrift, rejectedNiches, reviewFlags } = await generateBrief(g, {
     anthropicKey: ctx.env.anthropicKey || undefined,
+    useModel: hasAnthropicCredentials(ctx.env),
   });
   const runId = store.createRun(brief.niche.name);
   store.saveBrief(runId, brief);

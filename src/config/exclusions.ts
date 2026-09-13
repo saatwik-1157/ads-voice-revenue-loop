@@ -161,7 +161,11 @@ export const DEFAULT_EXCLUSION_RULES: ExclusionRule[] = [
     id: 'health_adjacent',
     reason: 'Health or body-image adjacent. Meta restricts these and the claims need substantiating.',
     severity: 'review',
-    terms: ['weight loss', 'fat loss', 'supplement', 'therapy', 'clinic', 'dental', 'cosmetic'],
+    // "dental" and "clinic" are deliberately absent: a clinic is an ordinary
+    // local business to sell services to, and naming one says nothing about
+    // whether the ad makes a health claim. The claim checker in brief/claims.ts
+    // is what catches an unsupportable promise, wherever it appears.
+    terms: ['weight loss', 'fat loss', 'supplement', 'therapy', 'cosmetic'],
   },
   {
     id: 'immigration',

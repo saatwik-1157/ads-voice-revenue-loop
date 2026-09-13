@@ -77,7 +77,7 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write(`${formatBrief(result.brief, ctx.guardrails)}\n\n`);
 
         const budget = Math.min(ctx.guardrails.maxDailySpendMinor, Math.round(ctx.guardrails.maxTestBudgetMinor / 3));
-        const gate = requestGate1(ctx.store, ctx.guardrails, runId, result.brief, budget);
+        const gate = requestGate1(ctx.store, ctx.guardrails, runId, result.brief, budget, result.reviewFlags);
         process.stdout.write(`GATE #1 requested: ${gate.approvalId}\n${gate.summary}\n`);
         if (gate.blocking.length) {
           process.stdout.write('\nBLOCKING ISSUES (regenerate the brief; do not approve past these):\n');

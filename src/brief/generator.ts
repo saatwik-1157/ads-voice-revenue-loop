@@ -11,6 +11,8 @@ export interface BriefResult {
   promiseDrift: string[];
   rejectedNiches: Array<{ name: string; reason: string }>;
   ranked: ScoredNiche[];
+  /** Ambiguous exclusion matches on the chosen niche, for gate #1 to confirm. */
+  reviewFlags: string[];
 }
 
 export interface BriefOptions {
@@ -29,7 +31,7 @@ export interface BriefOptions {
  * gate will refuse to let it publish.
  */
 export async function generateBrief(g: Guardrails, options: BriefOptions = {}): Promise<BriefResult> {
-  const { chosen, ranked, rejected } = pickNiche(options.candidates ?? SEED_CANDIDATES, g);
+  const { chosen, ranked, rejected, reviewFlags } = pickNiche(options.candidates ?? SEED_CANDIDATES, g);
   const dealValueMinor = options.dealValueMinor ?? 500000;
 
   let drafted: DraftedBrief;
@@ -73,6 +75,7 @@ export async function generateBrief(g: Guardrails, options: BriefOptions = {}): 
     promiseDrift: checkPromiseAlignment(brief),
     rejectedNiches: rejected,
     ranked,
+    reviewFlags,
   };
 }
 

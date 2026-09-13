@@ -1,5 +1,14 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import {
+  classifyText,
+  DEFAULT_EXCLUSION_RULES,
+  describeMatch,
+  rulesFromTerms,
+  type Classification,
+  type ExclusionRule,
+  type MatchSource,
+} from './exclusions.ts';
 
 /**
  * Phase A of the playbook: the control layer.
@@ -11,7 +20,10 @@ import { resolve } from 'node:path';
 export interface Guardrails {
   allowedGeos: string[];
   defaultCountryCode: string;
+  /** Extra plain terms the operator wants blocked outright, on top of the rules. */
   excludedNiches: string[];
+  /** Structured exclusion rules. Defaults to DEFAULT_EXCLUSION_RULES. */
+  exclusionRules?: ExclusionRule[];
   /** Meta "special ad categories" - must be handled deliberately, never by default. */
   specialAdCategoriesAllowed: boolean;
   allowedObjectives: string[];
@@ -37,19 +49,9 @@ export interface Guardrails {
 const DEFAULTS: Guardrails = {
   allowedGeos: ['IN'],
   defaultCountryCode: '91',
-  excludedNiches: [
-    'credit repair',
-    'loans',
-    'insurance',
-    'housing',
-    'employment',
-    'political',
-    'gambling',
-    'crypto trading signals',
-    'weight loss claims',
-    'medical treatment',
-    'immigration outcomes',
-  ],
+  excludedNiches: [],
+  exclusionRules: DEFAULT_EXCLUSION_RULES,
+
   specialAdCategoriesAllowed: false,
   allowedObjectives: ['OUTCOME_LEADS'],
   currency: 'INR',
@@ -124,12 +126,27 @@ export function assertGeoAllowed(g: Guardrails, geos: string[]): void {
   }
 }
 
-export function assertNicheAllowed(g: Guardrails, niche: string): void {
-  const lower = niche.toLowerCase();
-  const hit = g.excludedNiches.find((x) => lower.includes(x.toLowerCase()));
-  if (hit) {
-    throw new GuardrailViolation('niche', `"${niche}" matches excluded niche "${hit}"`);
-  }
+/** The rules in force: the structured defaults plus anything the operator listed. */
+export function exclusionRules(g: Guardrails): ExclusionRule[] {
+  return [...(g.exclusionRules ?? DEFAULT_EXCLUSION_RULES), ...rulesFromTerms(g.excludedNiches)];
+}
+
+export function classifyNiche(g: Guardrails, text: string, source: MatchSource = 'name'): Classification {
+  return classifyText(text, exclusionRules(g), source);
+}
+
+/**
+ * Hard stop only. A `review` verdict deliberately does not throw: the match is
+ * real but ambiguous, and gate #1 surfaces it to the person approving the
+ * campaign. Blocking on ambiguity drops legitimate niches - "solar panel
+ * cleaning for housing societies" is not a housing ad - and passing silently
+ * would hide a genuine one.
+ */
+export function assertNicheAllowed(g: Guardrails, niche: string, source: MatchSource = 'name'): void {
+  const { verdict, matches } = classifyNiche(g, niche, source);
+  if (verdict !== 'blocked') return;
+  const blocking = matches.filter((m) => m.severity === 'block');
+  throw new GuardrailViolation('niche', `"${niche}" is excluded: ${blocking.map(describeMatch).join('; ')}`);
 }
 
 export function assertObjectiveAllowed(g: Guardrails, objective: string): void {

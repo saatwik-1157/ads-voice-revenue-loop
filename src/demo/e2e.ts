@@ -1,4 +1,5 @@
 import type { Context } from '../orchestrator.ts';
+import { exclusionRules } from '../config/guardrails.ts';
 import type { MockMetaProvider } from '../meta/mock.ts';
 import type { MockVoiceProvider } from '../voice/mock.ts';
 import type { Brief } from '../core/types.ts';
@@ -32,10 +33,14 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
 
   say('PHASE A  control layer');
   say(`  geo ${g.allowedGeos.join(',')}  daily cap ${money(g.maxDailySpendMinor, g.currency)}  test budget ${money(g.maxTestBudgetMinor, g.currency)}  stop-loss ${money(g.stopLossMinor, g.currency)}`);
-  say(`  excluded niches: ${g.excludedNiches.length} entries   special ad categories: ${g.specialAdCategoriesAllowed ? 'ALLOWED' : 'blocked'}`);
+  const rules = exclusionRules(g);
+  const blockRules = rules.filter((r) => r.severity === 'block').length;
+  say(
+    `  exclusion rules: ${rules.length} (${blockRules} block, ${rules.length - blockRules} route to a human)   special ad categories: ${g.specialAdCategoriesAllowed ? 'ALLOWED' : 'blocked'}`,
+  );
 
   say('\nPHASE B  AI brief');
-  const { brief, claimIssues, promiseDrift, rejectedNiches } = await generateBrief(g, {
+  const { brief, claimIssues, promiseDrift, rejectedNiches, reviewFlags } = await generateBrief(g, {
     anthropicKey: ctx.env.anthropicKey || undefined,
   });
   const runId = store.createRun(brief.niche.name);
@@ -48,7 +53,7 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
 
   say('\nPHASE C  human gate #1');
   const dailyBudgetMinor = Math.min(g.maxDailySpendMinor, Math.round(g.maxTestBudgetMinor / days));
-  const gate1 = requestGate1(store, g, runId, brief, dailyBudgetMinor);
+  const gate1 = requestGate1(store, g, runId, brief, dailyBudgetMinor, reviewFlags);
   if (claimIssues.length || promiseDrift.length || gate1.blocking.length) {
     say('  BLOCKED - the brief has issues a human must not be asked to wave through:');
     for (const issue of gate1.blocking) say(`    - ${issue}`);
@@ -56,6 +61,7 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
     return;
   }
   say(`  approval ${gate1.approvalId} requested; no claim or promise-drift issues found`);
+  for (const flag of gate1.reviewFlags) say(`    confirm: ${flag}`);
   approve(store, gate1.approvalId, 'demo-operator');
   say('  approved by demo-operator (in production this is a person reading the summary above)');
 

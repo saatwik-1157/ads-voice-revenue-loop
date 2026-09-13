@@ -14,6 +14,7 @@ import { generateBrief } from '../src/brief/generator.ts';
 import { publishCampaign } from '../src/meta/publisher.ts';
 import { requestGate1, approve } from '../src/approvals/gates.ts';
 import { defaultGuardrails } from '../src/config/guardrails.ts';
+import { DEFAULT_MODEL, resolveBriefModel } from '../src/brief/llm.ts';
 import type { Brief } from '../src/core/types.ts';
 
 const G = defaultGuardrails;
@@ -303,4 +304,13 @@ test('identical artwork yields an identical hash, the way an ad account deduplic
     idempotencyKey: 'k3',
   });
   assert.notEqual(different.imageHash, a.imageHash);
+});
+
+test('the brief model defaults to Sonnet, and a blank override does not win', () => {
+  assert.equal(resolveBriefModel(undefined), 'claude-sonnet-5');
+  assert.equal(resolveBriefModel(''), 'claude-sonnet-5', 'FL_BRIEF_MODEL= in .env arrives as an empty string');
+  assert.equal(resolveBriefModel('   '), 'claude-sonnet-5');
+  assert.equal(resolveBriefModel('claude-opus-5'), 'claude-opus-5');
+  assert.equal(resolveBriefModel('  claude-haiku-4-5  '), 'claude-haiku-4-5');
+  assert.equal(DEFAULT_MODEL, 'claude-sonnet-5');
 });

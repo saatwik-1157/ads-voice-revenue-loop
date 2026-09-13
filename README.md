@@ -29,7 +29,7 @@ a sale can be attributed to the exact hook that paid for it.
 | Playbook phase | Where it lives | State |
 |---|---|---|
 | A. Control layer | [`src/config/guardrails.ts`](src/config/guardrails.ts), [`config/guardrails.json`](config/guardrails.json) | complete |
-| B. AI brief | [`src/brief/`](src/brief) | complete (Claude, with a deterministic offline writer) |
+| B. AI brief | [`src/brief/`](src/brief) | complete (Claude Sonnet 5, with a deterministic offline writer) |
 | C. Human gate #1 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
 | D. Meta execution | [`src/meta/`](src/meta) | API client complete; **untested against a live ad account** |
 | E. Lead handoff | [`src/pipeline/intake.ts`](src/pipeline/intake.ts), [`dispatch.ts`](src/pipeline/dispatch.ts) | complete |
@@ -321,6 +321,10 @@ it is reading someone else's schema.
   multi-touch model.
 - **The AI writes; it does not decide.** Claude drafts the brief and its output is re-validated
   locally. Every spend, publish and dial decision is made by the rules in this repo.
+- **Drafting runs on `claude-sonnet-5`.** It is copy written against a tight spec that gets checked
+  locally either way, and `brief` is a billed call every time it runs. Set `FL_BRIEF_MODEL` to use
+  something else. Without any credential the deterministic writer takes over and the brief is
+  labelled `written by: deterministic`.
 
 ## Layout
 

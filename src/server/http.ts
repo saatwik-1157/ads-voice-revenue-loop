@@ -4,7 +4,7 @@ import type { Context } from '../orchestrator.ts';
 import { voiceWebhookUrl } from '../orchestrator.ts';
 import { fromMetaLeadgen, intakeLead } from '../pipeline/intake.ts';
 import { dispatchLead } from '../pipeline/dispatch.ts';
-import { handleCallWebhook, recordExternalRevenue, verifySignature } from '../pipeline/webhooks.ts';
+import { handleCallWebhook, recordExternalRevenue, verifySignature, verifyToken } from '../pipeline/webhooks.ts';
 import { economicsForRun } from '../economics/metrics.ts';
 import { evaluate } from '../economics/decision.ts';
 import { maskPhone } from '../core/util.ts';
@@ -70,9 +70,17 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
 
   if (route === 'POST /webhooks/omnidimension') {
     const body = await readBody(req);
+    // HMAC is preferred. The static token exists because a voice platform that
+    // can only attach a fixed header would otherwise be unable to authenticate
+    // at all, and this endpoint records revenue and suppresses numbers. With
+    // neither configured it fails closed.
     const signature = header(req, 'x-omni-signature') || header(req, 'x-signature');
-    if (!verifySignature(body, signature, ctx.env.omni.webhookSecret)) {
-      json(res, 401, { error: 'bad signature' });
+    const bearer = header(req, 'authorization').replace(/^Bearer\s+/i, '') || header(req, 'x-webhook-token');
+    const authorized =
+      verifySignature(body, signature, ctx.env.omni.webhookSecret) ||
+      verifyToken(bearer, ctx.env.omni.webhookToken);
+    if (!authorized) {
+      json(res, 401, { error: 'bad signature or token' });
       return;
     }
     const result = handleCallWebhook(ctx.store, JSON.parse(body));

@@ -34,7 +34,7 @@ a sale can be attributed to the exact hook that paid for it.
 | D. Meta execution | [`src/meta/`](src/meta) | API client complete; **untested against a live ad account** |
 | E. Lead handoff | [`src/pipeline/intake.ts`](src/pipeline/intake.ts), [`dispatch.ts`](src/pipeline/dispatch.ts) | complete |
 | E2. Lead retrieval | [`src/server/http.ts`](src/server/http.ts), [`src/meta/api.ts`](src/meta/api.ts) | complete — the webhook carries a `leadgen_id`, the answers are fetched |
-| F. Call result | [`src/pipeline/webhooks.ts`](src/pipeline/webhooks.ts) | complete; payload shape needs confirming against your OmniDimension agent |
+| F. Call result | [`src/pipeline/webhooks.ts`](src/pipeline/webhooks.ts) | complete — our contract; configure the agent to match ([guide](docs/omnidimension.md)) |
 | G. AI review | [`src/economics/`](src/economics) | complete |
 | H. Human gate #2 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
 | (G on a timer) | [`src/scheduler.ts`](src/scheduler.ts) | complete — `cycle`, `schedule`, `serve --schedule` |
@@ -51,7 +51,7 @@ Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is 
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
-npm test                      # 100 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 101 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Credentials
@@ -304,8 +304,10 @@ These are enforced in code, not just documented:
   one. A 4xx is a bug in the request and is thrown straight at you rather than burning the rate
   limit. Retrying a write is only safe because the idempotency key rides on every attempt - the
   tests assert exactly that.
-- **Every webhook signature is verified** before anything happens — an unsigned payload can place
-  phone calls and record revenue, so an unset secret fails closed.
+- **Every webhook is authenticated** before anything happens — an unsigned payload can place phone
+  calls and record revenue, so an unset secret fails closed. Meta is HMAC-only; the voice webhook
+  prefers HMAC and accepts a static token for platforms that cannot sign a body, with the tradeoff
+  documented rather than hidden.
 - **Claims are checked before a human is asked to approve them.** A brief containing "guaranteed",
   "100%", "risk free" and friends is blocked at gate #1 rather than presented for sign-off, and the
   voice script is checked for promise drift against the ad's own CTA.
@@ -325,7 +327,8 @@ These are enforced in code, not just documented:
    in [docs/meta-instant-form.md](docs/meta-instant-form.md). Artwork is handled for you — drop
    cleared files in `assets/` or let the generated fallback produce them; either way `brief` uploads
    them and publishing a creative without an `image_hash` is refused.
-3. Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `OMNI_WEBHOOK_SECRET` and `FL_ADMIN_TOKEN`.
+3. Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `FL_ADMIN_TOKEN`, and either
+   `OMNI_WEBHOOK_SECRET` (HMAC, preferred) or `OMNI_WEBHOOK_TOKEN` (static header, weaker).
    Expose the server (`node src/cli.ts serve`) at a public HTTPS URL and point both webhooks at it:
    - `POST /webhooks/meta` — leadgen (verify subscription at `GET /webhooks/meta`)
    - `POST /webhooks/omnidimension` — post-call results
@@ -333,9 +336,9 @@ These are enforced in code, not just documented:
    activate.
 
 Confirm your OmniDimension agent's dispatch endpoint and post-call payload field names against
-[`src/voice/omnidimension.ts`](src/voice/omnidimension.ts) and
-[`src/pipeline/webhooks.ts`](src/pipeline/webhooks.ts) — the handler normalizes common variants, but
-it is reading someone else's schema.
+**[docs/omnidimension.md](docs/omnidimension.md)** — it covers both directions, and is explicit about
+which half is our contract (the post-call webhook) and which half is a guess at someone else's API
+(the dispatch call).
 
 ## Honest limitations
 

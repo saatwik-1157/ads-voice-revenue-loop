@@ -4,7 +4,7 @@ import { Store } from '../src/store/db.ts';
 import { defaultGuardrails } from '../src/config/guardrails.ts';
 import { fromMetaLeadgen, intakeLead } from '../src/pipeline/intake.ts';
 import { dispatchLead } from '../src/pipeline/dispatch.ts';
-import { handleCallWebhook, verifySignature } from '../src/pipeline/webhooks.ts';
+import { handleCallWebhook, verifySignature, verifyToken } from '../src/pipeline/webhooks.ts';
 import { MockVoiceProvider } from '../src/voice/mock.ts';
 import { generateBrief } from '../src/brief/generator.ts';
 import { checkClaims, checkPromiseAlignment, offersOptOut } from '../src/brief/claims.ts';
@@ -213,4 +213,12 @@ test('offersOptOut recognises the ways a script actually phrases it', () => {
   assert.ok(offersOptOut('we will not call this number again'));
   assert.ok(offersOptOut('I can remove your number from our list'));
   assert.ok(!offersOptOut('Thanks, have a good day'));
+});
+
+test('a static token authenticates a provider that cannot sign the body', () => {
+  assert.equal(verifyToken('shared-token', 'shared-token'), true);
+  assert.equal(verifyToken('wrong-token0', 'shared-token'), false, 'same length, different value');
+  assert.equal(verifyToken('short', 'shared-token'), false);
+  assert.equal(verifyToken('shared-token', ''), false, 'an unset token fails closed');
+  assert.equal(verifyToken('', 'shared-token'), false, 'a missing header fails closed');
 });

@@ -1,0 +1,12 @@
+{
+  "allowedGeos": ["IN"],
+  "defaultCountryCode": "91",
+  "currency": "INR",
+  "maxDailySpendMinor": 100000,
+  "maxTestBudgetMinor": 500000,
+  "stopLossMinor": 300000,
+  "budgetApprovalThresholdMinor": 200000,
+  "minLeadsBeforeDecision": 15,
+  "minSpendBeforeKillMinor": 80000,
+  "callWindow": { "startHour": 10, "endHour": 19, "timeZone": "Asia/Kolkata" }
+}

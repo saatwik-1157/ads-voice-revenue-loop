@@ -1,0 +1,80 @@
+import type { Store } from '../store/db.ts';
+import type { VoiceProvider } from '../voice/provider.ts';
+import type { Brief, Lead } from '../core/types.ts';
+import { isWithinCallWindow, type Guardrails } from '../config/guardrails.ts';
+import { maskPhone } from '../core/util.ts';
+
+export type DispatchResult =
+  | { status: 'dispatched'; leadId: string; callRef: string }
+  | { status: 'deferred'; leadId: string; reason: string }
+  | { status: 'suppressed'; leadId: string; reason: string };
+
+/**
+ * Phase E, second half: lead handoff.
+ *
+ * Speed is the single biggest driver of connect rate, so this runs as soon as a
+ * lead lands - but never outside the calling window, never to a suppressed
+ * number, and never past the daily call ceiling.
+ */
+export async function dispatchLead(
+  store: Store,
+  voice: VoiceProvider,
+  g: Guardrails,
+  lead: Lead,
+  brief: Brief,
+  webhookUrl: string,
+  extraMetadata: Record<string, string> = {},
+): Promise<DispatchResult> {
+  if (store.isSuppressed(lead.phoneE164)) {
+    store.setLeadCallStatus(lead.leadId, 'suppressed');
+    store.audit(lead.runId, 'system', 'call.suppressed', { leadId: lead.leadId, reason: 'suppression list' });
+    return { status: 'suppressed', leadId: lead.leadId, reason: 'number is on the suppression list' };
+  }
+  if (!lead.consent) {
+    store.setLeadCallStatus(lead.leadId, 'suppressed');
+    return { status: 'suppressed', leadId: lead.leadId, reason: 'no consent on record' };
+  }
+  if (!isWithinCallWindow(g)) {
+    store.audit(lead.runId, 'system', 'call.deferred', {
+      leadId: lead.leadId,
+      window: `${g.callWindow.startHour}-${g.callWindow.endHour} ${g.callWindow.timeZone}`,
+    });
+    return {
+      status: 'deferred',
+      leadId: lead.leadId,
+      reason: `outside calling window ${g.callWindow.startHour}:00-${g.callWindow.endHour}:00 ${g.callWindow.timeZone}`,
+    };
+  }
+  if (store.callsToday() >= g.maxCallsPerDay) {
+    return { status: 'deferred', leadId: lead.leadId, reason: `daily call ceiling ${g.maxCallsPerDay} reached` };
+  }
+
+  const metadata: Record<string, string> = {
+    lead_id: lead.leadId,
+    run_id: lead.runId,
+    campaign_id: lead.campaignId ?? '',
+    adset_id: lead.adsetId ?? '',
+    ad_id: lead.adId ?? '',
+    creative_id: lead.creativeId ?? '',
+    ...extraMetadata,
+  };
+
+  const { callRef } = await store.onceAsync('voice.dispatch', [lead.leadId], () =>
+    voice.dispatchCall({
+      lead,
+      brief,
+      metadata,
+      webhookUrl,
+      idempotencyKey: `call:${lead.leadId}`,
+    }),
+  );
+
+  store.setLeadCallStatus(lead.leadId, 'dispatched');
+  store.audit(lead.runId, 'voice', 'call.dispatched', {
+    leadId: lead.leadId,
+    callRef,
+    phone: maskPhone(lead.phoneE164),
+    adId: lead.adId,
+  });
+  return { status: 'dispatched', leadId: lead.leadId, callRef };
+}

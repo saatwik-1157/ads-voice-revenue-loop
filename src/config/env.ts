@@ -81,10 +81,21 @@ export function env(): Env {
  * authenticated another way to the offline writer, with no hint as to why.
  */
 export function hasAnthropicCredentials(e: Env): boolean {
-  if (e.anthropicKey) return true;
+  if (isRealKey(e.anthropicKey)) return true;
   if (process.env.ANTHROPIC_AUTH_TOKEN) return true;
   const home = process.env.HOME ?? process.env.USERPROFILE;
   return Boolean(home && existsSync(resolve(home, '.config', 'anthropic')));
+}
+
+/**
+ * A placeholder left in .env is worse than an empty one: it is truthy, so it
+ * passes the check, earns a 401, and falls back to the offline writer anyway -
+ * with a scary error in between. Treat the obvious stand-ins as absent.
+ */
+export function isRealKey(value: string): boolean {
+  const key = value.trim();
+  if (!key) return false;
+  return !/replace|your[-_]?key|placeholder|xxx|example|todo/i.test(key);
 }
 
 /** Fail fast rather than half-publishing a campaign with missing credentials. */

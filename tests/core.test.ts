@@ -10,6 +10,7 @@ import {
   validate,
 } from '../src/config/guardrails.ts';
 import { budgetChangeNeedsApproval } from '../src/approvals/gates.ts';
+import { isRealKey } from '../src/config/env.ts';
 
 test('toE164 normalizes the shapes a lead form actually produces', () => {
   assert.equal(toE164('+91 98765 43210', '91'), '+919876543210');
@@ -62,4 +63,13 @@ test('budget increases past the step factor or the threshold need a human', () =
   assert.equal(budgetChangeNeedsApproval(g, 100000, 130000).needed, false);
   assert.equal(budgetChangeNeedsApproval(g, 100000, 140000).needed, true);
   assert.equal(budgetChangeNeedsApproval(g, 280000, 310000).needed, true);
+});
+
+test('a placeholder key counts as no key at all', () => {
+  // A placeholder is worse than an empty value: it is truthy, so it passes the
+  // check, earns a 401, and falls back to the offline writer anyway.
+  for (const fake of ['sk-ant-REPLACE-ME', 'sk-ant-YOUR-KEY', 'your_key_here', 'xxx', 'TODO', '  ', '']) {
+    assert.equal(isRealKey(fake), false, `${JSON.stringify(fake)} is not a usable key`);
+  }
+  assert.equal(isRealKey('sk-ant-api03-abcdefghijklmnop'), true);
 });

@@ -38,6 +38,17 @@ export interface MetaProvider {
     idempotencyKey: string;
   }): Promise<{ creativeId: string }>;
 
+  /**
+   * Upload an image and return the hash an ad creative refers to. Meta stores
+   * the image against the ad account; the hash is what `createAdCreative` uses.
+   */
+  uploadImage(input: {
+    bytes: Buffer;
+    filename: string;
+    contentType: string;
+    idempotencyKey: string;
+  }): Promise<{ imageHash: string }>;
+
   createAd(input: {
     name: string;
     adsetId: string;

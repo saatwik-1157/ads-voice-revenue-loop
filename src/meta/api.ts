@@ -180,6 +180,40 @@ export class MetaApiProvider implements MetaProvider {
     return { creativeId: res.id! };
   }
 
+  async uploadImage(input: {
+    bytes: Buffer;
+    filename: string;
+    contentType: string;
+    idempotencyKey: string;
+  }): Promise<{ imageHash: string }> {
+    // adimages is multipart, not form-urlencoded, and the response keys the
+    // result by the field name we send the bytes under.
+    const form = new FormData();
+    form.set(input.filename, new Blob([new Uint8Array(input.bytes)], { type: input.contentType }), input.filename);
+
+    const text = await withRetry(
+      'POST adimages',
+      () =>
+        this.#send(`https://graph.facebook.com/${this.#version}/${this.#accountId}/adimages`, {
+          method: 'POST',
+          // No Content-Type here on purpose: fetch sets the multipart boundary.
+          headers: {
+            Authorization: `Bearer ${this.#token}`,
+            'X-Business-Idempotency-Key': input.idempotencyKey,
+          },
+          body: form,
+        }),
+      this.#retry,
+    );
+
+    const parsed = JSON.parse(text) as { images?: Record<string, { hash?: string }> };
+    const entry = parsed.images?.[input.filename] ?? Object.values(parsed.images ?? {})[0];
+    if (!entry?.hash) {
+      throw new MetaApiError(422, `adimages response carried no hash: ${redact(text)}`);
+    }
+    return { imageHash: entry.hash };
+  }
+
   async createAd(input: {
     name: string;
     adsetId: string;

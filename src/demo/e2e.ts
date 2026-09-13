@@ -12,6 +12,7 @@ import { handleCallWebhook } from '../pipeline/webhooks.ts';
 import { evaluate, planScale } from '../economics/decision.ts';
 import { formatBrief, formatRecommendation } from '../report.ts';
 import { money } from '../core/util.ts';
+import { ensureCreativeAssets } from '../creative/pipeline.ts';
 import { pauseKilledAds } from '../apply.ts';
 
 /**
@@ -51,7 +52,21 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
     say(`  niches rejected by guardrails: ${rejectedNiches.map((r) => r.name).join('; ')}`);
   }
 
-  say('\nPHASE C  human gate #1');
+  say('\nPHASE C  creative assets + human gate #1');
+  // Artwork is produced before the gate, not after it: gate #1 asks a person to
+  // approve the creative, and they cannot do that without seeing it.
+  const assetOutcomes = await ensureCreativeAssets(store, meta, ctx.assets, runId, brief, {
+    previewDir: ctx.env.previewDir,
+  });
+  const failedAssets = assetOutcomes.filter((o) => o.status === 'failed');
+  if (failedAssets.length) {
+    say(`  ${failedAssets.length} creative(s) have no usable artwork; the demo stops here.`);
+    for (const outcome of failedAssets) say(`    - ${outcome.creativeId}: ${outcome.error}`);
+    return;
+  }
+  say(`  artwork ready for ${assetOutcomes.length} creative(s) via the ${ctx.assets.kind} provider`);
+  if (ctx.env.previewDir) say(`  previews in ${ctx.env.previewDir}/${runId}`);
+
   const dailyBudgetMinor = Math.min(g.maxDailySpendMinor, Math.round(g.maxTestBudgetMinor / days));
   const gate1 = requestGate1(store, g, runId, brief, dailyBudgetMinor, reviewFlags);
   if (claimIssues.length || promiseDrift.length || gate1.blocking.length) {

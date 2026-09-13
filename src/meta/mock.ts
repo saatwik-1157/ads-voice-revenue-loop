@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { AdInsight, MetaProvider } from './provider.ts';
@@ -9,6 +10,7 @@ interface MockState {
   ads: Record<string, { creativeId: string; status: 'ACTIVE' | 'PAUSED'; quality: number }>;
   adsets: Record<string, { dailyBudgetMinor: number; status: 'ACTIVE' | 'PAUSED'; adIds: string[] }>;
   acc: Record<string, { spendMinor: number; impressions: number; clicks: number; leads: number }>;
+  images: Record<string, string>;
 }
 
 /**
@@ -33,7 +35,8 @@ export class MockMetaProvider implements MetaProvider {
     this.#path = statePath;
     this.#state = (statePath && existsSync(statePath)
       ? (JSON.parse(readFileSync(statePath, 'utf8')) as MockState)
-      : { seq: 0, prng: seed >>> 0, ads: {}, adsets: {}, acc: {} });
+      : { seq: 0, prng: seed >>> 0, ads: {}, adsets: {}, acc: {}, images: {} });
+    this.#state.images ??= {};
   }
 
   #save(): void {
@@ -70,6 +73,20 @@ export class MockMetaProvider implements MetaProvider {
     const creativeId = this.#id('crt_');
     this.#save();
     return { creativeId };
+  }
+
+  async uploadImage(input: {
+    bytes: Buffer;
+    filename: string;
+    contentType: string;
+    idempotencyKey: string;
+  }): Promise<{ imageHash: string }> {
+    // Hash the bytes so identical artwork yields an identical hash, the way a
+    // real ad account deduplicates uploads.
+    const digest = createHash('sha256').update(input.bytes).digest('hex').slice(0, 32);
+    this.#state.images[input.filename] = digest;
+    this.#save();
+    return { imageHash: digest };
   }
 
   async createAd(input: { adsetId: string; creativeId: string }): Promise<{ adId: string }> {

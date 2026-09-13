@@ -7,6 +7,9 @@ import { MockMetaProvider } from './meta/mock.ts';
 import type { VoiceProvider } from './voice/provider.ts';
 import { OmniDimensionProvider } from './voice/omnidimension.ts';
 import { MockVoiceProvider } from './voice/mock.ts';
+import type { CreativeAssetProvider } from './creative/provider.ts';
+import { RenderedAssetProvider } from './creative/rendered.ts';
+import { LibraryAssetProvider } from './creative/library.ts';
 
 export interface Context {
   env: Env;
@@ -14,6 +17,7 @@ export interface Context {
   store: Store;
   meta: MetaProvider;
   voice: VoiceProvider;
+  assets: CreativeAssetProvider;
 }
 
 /**
@@ -46,7 +50,12 @@ export function createContext(overrides: Partial<Context> = {}): Context {
       ? new OmniDimensionProvider({ apiKey: e.omni.apiKey, agentId: e.omni.agentId, baseUrl: e.omni.baseUrl })
       : new MockVoiceProvider());
 
-  return { env: e, guardrails, store, meta, voice };
+  // Cleared artwork wins whenever there is any: a human made and approved it.
+  // The renderer is the fallback that keeps the loop runnable without one.
+  const library = new LibraryAssetProvider({ dir: e.assetDir });
+  const assets = overrides.assets ?? (library.files().length > 0 ? library : new RenderedAssetProvider());
+
+  return { env: e, guardrails, store, meta, voice, assets };
 }
 
 export function voiceWebhookUrl(e: Env): string {

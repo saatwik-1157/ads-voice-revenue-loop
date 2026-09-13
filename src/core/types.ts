@@ -55,7 +55,10 @@ export interface CreativeVariant {
   headline: string;
   description: string;
   format: 'reel' | 'image' | 'video';
+  /** Meta image hash, set once the artwork is uploaded. */
   assetRef: string | null;
+  /** How the artwork was obtained. Surfaced at gate #1 before anyone approves spend. */
+  assetProvenance: 'rendered' | 'library' | 'manual' | null;
 }
 
 export interface Brief {

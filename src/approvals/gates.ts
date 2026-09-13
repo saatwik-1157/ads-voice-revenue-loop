@@ -3,6 +3,7 @@ import type { Brief } from '../core/types.ts';
 import type { Guardrails } from '../config/guardrails.ts';
 import { money } from '../core/util.ts';
 import { checkClaims, checkPromiseAlignment } from '../brief/claims.ts';
+import { hasGeneratedArtwork } from '../creative/pipeline.ts';
 
 export const GATE_1 = 'gate1_publish';
 export const GATE_2 = 'gate2_material_change';
@@ -52,15 +53,22 @@ export function requestGate1(
     `Budget:  ${money(dailyBudgetMinor, g.currency)}/day, test cap ${money(g.maxTestBudgetMinor, g.currency)}`,
     `Geo:     ${g.allowedGeos.join(', ')}`,
     `Creative: ${brief.creatives.length} variants (${new Set(brief.creatives.map((c) => c.angle)).size} angles)`,
+    `Artwork: ${describeArtwork(brief)}`,
     `Target:  CPL <= ${money(brief.successMetrics.targetCplMinor, g.currency)}, ROAS >= ${brief.successMetrics.targetRoas}`,
   ].join('\n');
 
-  const full = reviewFlags.length
+  // Approving spend without knowing the imagery was machine-generated is
+  // exactly the kind of thing a gate exists to prevent.
+  const flags = hasGeneratedArtwork(brief)
+    ? [...reviewFlags, 'artwork is auto-generated, not cleared by a person - look at the previews before approving']
+    : reviewFlags;
+
+  const full = flags.length
     ? [
         summary,
         '',
-        `CONFIRM: ${reviewFlags.length} ambiguous exclusion match(es) - approve only if none describes the offer:`,
-        ...reviewFlags.map((f) => `  - ${f}`),
+        `CONFIRM before approving (${flags.length}):`,
+        ...flags.map((f) => `  - ${f}`),
       ].join('\n')
     : summary;
 
@@ -68,11 +76,11 @@ export function requestGate1(
     runId,
     GATE_1,
     'Publish first test campaign',
-    JSON.stringify({ summary: full, blocking, reviewFlags }),
+    JSON.stringify({ summary: full, blocking, reviewFlags: flags }),
   );
   store.setRunState(runId, 'awaiting_gate1');
-  store.audit(runId, 'agent', 'gate1.requested', { approvalId, blocking, reviewFlags });
-  return { approvalId, gate: GATE_1, summary: full, blocking, reviewFlags };
+  store.audit(runId, 'agent', 'gate1.requested', { approvalId, blocking, reviewFlags: flags });
+  return { approvalId, gate: GATE_1, summary: full, blocking, reviewFlags: flags };
 }
 
 /**
@@ -86,6 +94,15 @@ export function requestGate2(store: Store, runId: string, subject: string, detai
   const approvalId = store.requestApproval(runId, GATE_2, subject, JSON.stringify(detail));
   store.audit(runId, 'agent', 'gate2.requested', { approvalId, subject, detail });
   return { approvalId, gate: GATE_2, summary: subject, blocking: [], reviewFlags: [] };
+}
+
+function describeArtwork(brief: Brief): string {
+  const counts = new Map<string, number>();
+  for (const creative of brief.creatives) {
+    const key = creative.assetProvenance ?? 'not yet produced';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([key, count]) => `${count} ${key}`).join(', ');
 }
 
 export function approve(store: Store, approvalId: string, approver: string): boolean {

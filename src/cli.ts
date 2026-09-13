@@ -8,6 +8,7 @@ import { economicsForRun } from './economics/metrics.ts';
 import { formatBrief, formatEconomics, formatRecommendation } from './report.ts';
 import { runDemo } from './demo/e2e.ts';
 import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler, type CycleResult } from './scheduler.ts';
+import { ensureCreativeAssets, hasGeneratedArtwork, missingAssets } from './creative/pipeline.ts';
 import { money } from './core/util.ts';
 import { applyRecommendation, describeOutcome } from './apply.ts';
 import type { MockMetaProvider } from './meta/mock.ts';
@@ -22,6 +23,7 @@ Commands
   approvals [runId]               List pending approvals
   approve <approvalId> --by NAME  Grant an approval
   reject  <approvalId> --by NAME --reason TEXT
+  assets [runId] [--force]        Produce and upload artwork for each creative
   publish <runId> [--budget MAJOR] [--days N] [--lead-form ID] [--activate]
   sync <runId>                    Pull Meta insights into the local store
   review <runId>                  Phase G: economics + KEEP/KILL/ITERATE/SCALE
@@ -134,11 +136,51 @@ async function main(argv: string[]): Promise<number> {
         return ok ? 0 : 1;
       }
 
+      case 'assets': {
+        const runId = positional[0] ?? ctx.store.latestRun();
+        if (!runId) return fail('no run');
+        const brief = ctx.store.getBrief(runId);
+        if (!brief) return fail(`run ${runId} has no brief`);
+
+        process.stdout.write(`producing artwork with the ${ctx.assets.kind} provider
+`);
+        const outcomes = await ensureCreativeAssets(ctx.store, ctx.meta, ctx.assets, runId, brief, {
+          previewDir: ctx.env.previewDir,
+          force: flags.force === 'true',
+        });
+        for (const outcome of outcomes) {
+          if (outcome.status === 'failed') {
+            process.stdout.write(`  FAILED  ${outcome.creativeId}: ${outcome.error}
+`);
+            continue;
+          }
+          const where = outcome.previewPath ? `  preview: ${outcome.previewPath}` : '';
+          process.stdout.write(
+            `  ${outcome.status.padEnd(8)} ${outcome.creativeId}  ${outcome.assetRef} (${outcome.provenance ?? 'unknown'})${where}
+`,
+          );
+        }
+        const failed = outcomes.filter((o) => o.status === 'failed').length;
+        return failed ? 1 : 0;
+      }
+
       case 'publish': {
         const runId = positional[0] ?? ctx.store.latestRun();
         if (!runId) return fail('no run to publish');
         const brief = ctx.store.getBrief(runId);
         if (!brief) return fail(`run ${runId} has no brief`);
+        if (missingAssets(brief).length) {
+          process.stdout.write(`producing artwork with the ${ctx.assets.kind} provider
+`);
+          const outcomes = await ensureCreativeAssets(ctx.store, ctx.meta, ctx.assets, runId, brief, {
+            previewDir: ctx.env.previewDir,
+          });
+          for (const outcome of outcomes.filter((o) => o.status === 'failed')) {
+            process.stderr.write(`  FAILED  ${outcome.creativeId}: ${outcome.error}
+`);
+          }
+        }
+
         const dailyBudgetMinor = flags.budget
           ? Math.round(Number(flags.budget) * 100)
           : Math.min(ctx.guardrails.maxDailySpendMinor, Math.round(ctx.guardrails.maxTestBudgetMinor / 3));
@@ -297,7 +339,6 @@ async function applyDecision(ctx: Context, runId: string): Promise<number> {
 
   const rec = evaluate(ctx.store, ctx.guardrails, runId, brief);
   process.stdout.write(`${formatRecommendation(rec, ctx.guardrails)}
-
 `);
 
   // unattended:false - a person running this by hand has already decided to

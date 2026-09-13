@@ -11,6 +11,7 @@ import {
 } from '../config/guardrails.ts';
 import { now } from '../core/util.ts';
 import { GATE_1 } from '../approvals/gates.ts';
+import { missingAssets } from '../creative/pipeline.ts';
 
 export interface PublishOptions {
   dailyBudgetMinor: number;
@@ -61,6 +62,16 @@ export async function publishCampaign(
     // at gate #1; only hard blocks stop the publish here.
     assertNicheAllowed(g, brief.offer.icp, 'offer');
     assertNicheAllowed(g, brief.offer.outcome, 'offer');
+  }
+
+  // Artwork must exist before a single campaign object is created, so a run
+  // cannot end up half-built around a creative that has no image.
+  const missing = missingAssets(brief);
+  if (missing.length) {
+    throw new GuardrailViolation(
+      'creative_assets',
+      `${missing.length} creative(s) have no uploaded artwork: ${missing.join(', ')}. Run \`assets\` first.`,
+    );
   }
 
   const start = new Date();

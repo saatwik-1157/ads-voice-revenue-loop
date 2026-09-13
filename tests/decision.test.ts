@@ -13,11 +13,21 @@ import { requestGate1, approve } from '../src/approvals/gates.ts';
 import { now } from '../src/core/util.ts';
 import type { Brief } from '../src/core/types.ts';
 
+/** Publishing requires uploaded artwork; these tests are not about that step. */
+function stampAssets(brief: Brief): Brief {
+  for (const creative of brief.creatives) {
+    creative.assetRef = `hash_${creative.creativeId}`;
+    creative.assetProvenance = 'manual';
+  }
+  return brief;
+}
+
 const G = { ...defaultGuardrails, callWindow: { startHour: 0, endHour: 24, timeZone: 'UTC' } };
 
 async function seed(): Promise<{ store: Store; runId: string; brief: Brief }> {
   const store = new Store(':memory:');
   const { brief } = await generateBrief(G);
+  stampAssets(brief);
   const runId = store.createRun(brief.niche.name);
   store.saveBrief(runId, brief);
   return { store, runId, brief };

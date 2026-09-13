@@ -1,0 +1,510 @@
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { id, now, fingerprint } from '../core/util.ts';
+import type {
+  AdRecord,
+  AuditEvent,
+  Brief,
+  CallOutcome,
+  CampaignRecord,
+  Lead,
+  RunState,
+  SpendPoint,
+} from '../core/types.ts';
+
+const SCHEMA = `
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS runs (
+  run_id TEXT PRIMARY KEY,
+  brief_id TEXT,
+  state TEXT NOT NULL,
+  niche TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS briefs (
+  brief_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approvals (
+  approval_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  gate TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  status TEXT NOT NULL,
+  approver TEXT,
+  decided_at TEXT,
+  requested_at TEXT NOT NULL,
+  detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+  campaign_id TEXT PRIMARY KEY,
+  adset_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  brief_id TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  daily_budget_minor INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  status TEXT NOT NULL,
+  geo TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  provider TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ads (
+  ad_id TEXT PRIMARY KEY,
+  campaign_id TEXT NOT NULL,
+  adset_id TEXT NOT NULL,
+  creative_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS leads (
+  lead_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  phone_e164 TEXT NOT NULL,
+  email TEXT,
+  consent INTEGER NOT NULL,
+  consent_source TEXT NOT NULL,
+  campaign_id TEXT,
+  adset_id TEXT,
+  ad_id TEXT,
+  creative_id TEXT,
+  created_at TEXT NOT NULL,
+  call_status TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS calls (
+  call_id TEXT PRIMARY KEY,
+  lead_id TEXT NOT NULL,
+  connected INTEGER NOT NULL,
+  qualified INTEGER NOT NULL,
+  intent_score INTEGER NOT NULL,
+  objection TEXT,
+  appointment_booked INTEGER NOT NULL,
+  sale_status TEXT NOT NULL,
+  expected_value_minor INTEGER NOT NULL,
+  next_action TEXT,
+  summary TEXT,
+  opt_out INTEGER NOT NULL,
+  received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS spend (
+  spend_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  ad_id TEXT,
+  spend_minor INTEGER NOT NULL,
+  impressions INTEGER NOT NULL,
+  clicks INTEGER NOT NULL,
+  leads INTEGER NOT NULL,
+  as_of TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS revenue (
+  revenue_id TEXT PRIMARY KEY,
+  lead_id TEXT NOT NULL,
+  amount_minor INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS suppression (
+  phone_e164 TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  added_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS idempotency (
+  key TEXT PRIMARY KEY,
+  operation TEXT NOT NULL,
+  result TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit (
+  event_id TEXT PRIMARY KEY,
+  run_id TEXT,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  detail TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leads_run ON leads(run_id);
+CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);
+CREATE INDEX IF NOT EXISTS idx_spend_run ON spend(run_id);
+CREATE INDEX IF NOT EXISTS idx_audit_run ON audit(run_id);
+`;
+
+export class Store {
+  readonly db: DatabaseSync;
+
+  constructor(path: string) {
+    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+    this.db = new DatabaseSync(path);
+    this.db.exec(SCHEMA);
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  // --- audit -------------------------------------------------------------
+  audit(runId: string | null, actor: AuditEvent['actor'], kind: string, detail: unknown): void {
+    this.db
+      .prepare('INSERT INTO audit (event_id, run_id, at, actor, kind, detail) VALUES (?,?,?,?,?,?)')
+      .run(id('evt'), runId, now(), actor, kind, typeof detail === 'string' ? detail : JSON.stringify(detail));
+  }
+
+  auditTrail(runId: string): AuditEvent[] {
+    return this.db
+      .prepare(
+        'SELECT event_id as eventId, run_id as runId, at, actor, kind, detail FROM audit WHERE run_id = ? ORDER BY at',
+      )
+      .all(runId) as unknown as AuditEvent[];
+  }
+
+  // --- idempotency -------------------------------------------------------
+  /**
+   * Run `fn` at most once for a given logical operation. A retried webhook or a
+   * re-run CLI command returns the stored result instead of creating a second
+   * campaign or placing a second call.
+   */
+  once<T>(operation: string, keyParts: unknown[], fn: () => T): T {
+    const key = `${operation}:${fingerprint(keyParts)}`;
+    const existing = this.db.prepare('SELECT result FROM idempotency WHERE key = ?').get(key) as
+      | { result: string }
+      | undefined;
+    if (existing) return JSON.parse(existing.result) as T;
+    const result = fn();
+    this.db
+      .prepare('INSERT INTO idempotency (key, operation, result, created_at) VALUES (?,?,?,?)')
+      .run(key, operation, JSON.stringify(result ?? null), now());
+    return result;
+  }
+
+  /** Async form of {@link once}, for provider calls that hit the network. */
+  async onceAsync<T>(operation: string, keyParts: unknown[], fn: () => Promise<T>): Promise<T> {
+    const key = `${operation}:${fingerprint(keyParts)}`;
+    const existing = this.db.prepare('SELECT result FROM idempotency WHERE key = ?').get(key) as
+      | { result: string }
+      | undefined;
+    if (existing) return JSON.parse(existing.result) as T;
+    const result = await fn();
+    this.db
+      .prepare('INSERT INTO idempotency (key, operation, result, created_at) VALUES (?,?,?,?)')
+      .run(key, operation, JSON.stringify(result ?? null), now());
+    return result;
+  }
+
+  // --- runs --------------------------------------------------------------
+  createRun(niche: string): string {
+    const runId = id('run');
+    this.db
+      .prepare(
+        'INSERT INTO runs (run_id, brief_id, state, niche, created_at, updated_at, notes) VALUES (?,?,?,?,?,?,?)',
+      )
+      .run(runId, null, 'drafted', niche, now(), now(), '');
+    return runId;
+  }
+
+  setRunState(runId: string, state: RunState, notes = ''): void {
+    this.db
+      .prepare('UPDATE runs SET state = ?, updated_at = ?, notes = ? WHERE run_id = ?')
+      .run(state, now(), notes, runId);
+  }
+
+  getRun(runId: string): { runId: string; briefId: string | null; state: RunState; niche: string } | undefined {
+    return this.db
+      .prepare('SELECT run_id as runId, brief_id as briefId, state, niche FROM runs WHERE run_id = ?')
+      .get(runId) as never;
+  }
+
+  listRuns(): Array<{ runId: string; state: RunState; niche: string; createdAt: string }> {
+    return this.db
+      .prepare('SELECT run_id as runId, state, niche, created_at as createdAt FROM runs ORDER BY created_at DESC')
+      .all() as never;
+  }
+
+  latestRun(): string | undefined {
+    const row = this.db.prepare('SELECT run_id as runId FROM runs ORDER BY created_at DESC LIMIT 1').get() as
+      | { runId: string }
+      | undefined;
+    return row?.runId;
+  }
+
+  // --- briefs ------------------------------------------------------------
+  saveBrief(runId: string, brief: Brief): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO briefs (brief_id, run_id, created_at, payload) VALUES (?,?,?,?)')
+      .run(brief.briefId, runId, brief.createdAt, JSON.stringify(brief));
+    this.db.prepare('UPDATE runs SET brief_id = ?, updated_at = ? WHERE run_id = ?').run(brief.briefId, now(), runId);
+  }
+
+  getBrief(runId: string): Brief | undefined {
+    const row = this.db
+      .prepare('SELECT payload FROM briefs WHERE run_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(runId) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Brief) : undefined;
+  }
+
+  // --- approvals ---------------------------------------------------------
+  requestApproval(runId: string, gate: string, subject: string, detail: string): string {
+    const approvalId = id('apr');
+    this.db
+      .prepare(
+        'INSERT INTO approvals (approval_id, run_id, gate, subject, status, approver, decided_at, requested_at, detail) VALUES (?,?,?,?,?,?,?,?,?)',
+      )
+      .run(approvalId, runId, gate, subject, 'pending', null, null, now(), detail);
+    return approvalId;
+  }
+
+  decideApproval(approvalId: string, status: 'approved' | 'rejected', approver: string): boolean {
+    const res = this.db
+      .prepare(
+        "UPDATE approvals SET status = ?, approver = ?, decided_at = ? WHERE approval_id = ? AND status = 'pending'",
+      )
+      .run(status, approver, now(), approvalId);
+    return Number(res.changes) > 0;
+  }
+
+  pendingApprovals(runId: string): Array<{ approvalId: string; gate: string; subject: string; detail: string }> {
+    return this.db
+      .prepare(
+        "SELECT approval_id as approvalId, gate, subject, detail FROM approvals WHERE run_id = ? AND status = 'pending' ORDER BY requested_at",
+      )
+      .all(runId) as never;
+  }
+
+  hasApproval(runId: string, gate: string): boolean {
+    const row = this.db
+      .prepare("SELECT COUNT(*) as n FROM approvals WHERE run_id = ? AND gate = ? AND status = 'approved'")
+      .get(runId, gate) as { n: number };
+    return row.n > 0;
+  }
+
+  // --- campaigns / ads ---------------------------------------------------
+  saveCampaign(c: CampaignRecord): void {
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO campaigns (campaign_id, adset_id, run_id, brief_id, objective, daily_budget_minor, currency, status, geo, created_at, provider) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        c.campaignId,
+        c.adsetId,
+        c.runId,
+        c.briefId,
+        c.objective,
+        c.dailyBudgetMinor,
+        c.currency,
+        c.status,
+        JSON.stringify(c.geo),
+        c.createdAt,
+        c.provider,
+      );
+  }
+
+  getCampaign(runId: string): CampaignRecord | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT campaign_id as campaignId, adset_id as adsetId, run_id as runId, brief_id as briefId, objective, daily_budget_minor as dailyBudgetMinor, currency, status, geo, created_at as createdAt, provider FROM campaigns WHERE run_id = ? ORDER BY created_at DESC LIMIT 1',
+      )
+      .get(runId) as (Omit<CampaignRecord, 'geo'> & { geo: string }) | undefined;
+    return row ? { ...row, geo: JSON.parse(row.geo) as string[] } : undefined;
+  }
+
+  setCampaignStatus(campaignId: string, status: 'ACTIVE' | 'PAUSED'): void {
+    this.db.prepare('UPDATE campaigns SET status = ? WHERE campaign_id = ?').run(status, campaignId);
+  }
+
+  setCampaignBudget(campaignId: string, dailyBudgetMinor: number): void {
+    this.db
+      .prepare('UPDATE campaigns SET daily_budget_minor = ? WHERE campaign_id = ?')
+      .run(dailyBudgetMinor, campaignId);
+  }
+
+  saveAd(a: AdRecord): void {
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO ads (ad_id, campaign_id, adset_id, creative_id, status, created_at) VALUES (?,?,?,?,?,?)',
+      )
+      .run(a.adId, a.campaignId, a.adsetId, a.creativeId, a.status, a.createdAt);
+  }
+
+  listAds(campaignId: string): AdRecord[] {
+    return this.db
+      .prepare(
+        'SELECT ad_id as adId, campaign_id as campaignId, adset_id as adsetId, creative_id as creativeId, status, created_at as createdAt FROM ads WHERE campaign_id = ?',
+      )
+      .all(campaignId) as never;
+  }
+
+  setAdStatus(adId: string, status: 'ACTIVE' | 'PAUSED'): void {
+    this.db.prepare('UPDATE ads SET status = ? WHERE ad_id = ?').run(status, adId);
+  }
+
+  // --- leads -------------------------------------------------------------
+  /** Returns the existing lead id when the dedupe key was already seen. */
+  insertLead(lead: Lead, dedupeKey: string): { leadId: string; duplicate: boolean } {
+    const existing = this.db.prepare('SELECT lead_id as leadId FROM leads WHERE dedupe_key = ?').get(dedupeKey) as
+      | { leadId: string }
+      | undefined;
+    if (existing) return { leadId: existing.leadId, duplicate: true };
+    this.db
+      .prepare(
+        'INSERT INTO leads (lead_id, run_id, name, phone_e164, email, consent, consent_source, campaign_id, adset_id, ad_id, creative_id, created_at, call_status, dedupe_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        lead.leadId,
+        lead.runId,
+        lead.name,
+        lead.phoneE164,
+        lead.email,
+        lead.consent ? 1 : 0,
+        lead.consentSource,
+        lead.campaignId,
+        lead.adsetId,
+        lead.adId,
+        lead.creativeId,
+        lead.createdAt,
+        lead.callStatus,
+        dedupeKey,
+      );
+    return { leadId: lead.leadId, duplicate: false };
+  }
+
+  getLead(leadId: string): Lead | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT lead_id as leadId, run_id as runId, name, phone_e164 as phoneE164, email, consent, consent_source as consentSource, campaign_id as campaignId, adset_id as adsetId, ad_id as adId, creative_id as creativeId, created_at as createdAt, call_status as callStatus FROM leads WHERE lead_id = ?',
+      )
+      .get(leadId) as (Omit<Lead, 'consent'> & { consent: number }) | undefined;
+    return row ? { ...row, consent: row.consent === 1 } : undefined;
+  }
+
+  setLeadCallStatus(leadId: string, status: Lead['callStatus']): void {
+    this.db.prepare('UPDATE leads SET call_status = ? WHERE lead_id = ?').run(status, leadId);
+  }
+
+  pendingLeads(runId: string): Lead[] {
+    const rows = this.db
+      .prepare(
+        "SELECT lead_id as leadId, run_id as runId, name, phone_e164 as phoneE164, email, consent, consent_source as consentSource, campaign_id as campaignId, adset_id as adsetId, ad_id as adId, creative_id as creativeId, created_at as createdAt, call_status as callStatus FROM leads WHERE run_id = ? AND call_status = 'pending' ORDER BY created_at",
+      )
+      .all(runId) as Array<Omit<Lead, 'consent'> & { consent: number }>;
+    return rows.map((r) => ({ ...r, consent: r.consent === 1 }));
+  }
+
+  countLeads(runId: string): number {
+    return (this.db.prepare('SELECT COUNT(*) as n FROM leads WHERE run_id = ?').get(runId) as { n: number }).n;
+  }
+
+  callsToday(): number {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    return (this.db.prepare('SELECT COUNT(*) as n FROM calls WHERE received_at >= ?').get(since) as { n: number }).n;
+  }
+
+  // --- suppression -------------------------------------------------------
+  suppress(phoneE164: string, reason: string): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO suppression (phone_e164, reason, added_at) VALUES (?,?,?)')
+      .run(phoneE164, reason, now());
+  }
+
+  isSuppressed(phoneE164: string): boolean {
+    return this.db.prepare('SELECT 1 FROM suppression WHERE phone_e164 = ?').get(phoneE164) !== undefined;
+  }
+
+  // --- calls / revenue / spend ------------------------------------------
+  saveCall(c: CallOutcome): void {
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO calls (call_id, lead_id, connected, qualified, intent_score, objection, appointment_booked, sale_status, expected_value_minor, next_action, summary, opt_out, received_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        c.callId,
+        c.leadId,
+        c.connected ? 1 : 0,
+        c.qualified ? 1 : 0,
+        c.intentScore,
+        c.objection,
+        c.appointmentBooked ? 1 : 0,
+        c.saleStatus,
+        c.expectedValueMinor,
+        c.nextAction,
+        c.summary,
+        c.optOut ? 1 : 0,
+        c.receivedAt,
+      );
+  }
+
+  callForLead(leadId: string): CallOutcome | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT call_id as callId, lead_id as leadId, connected, qualified, intent_score as intentScore, objection, appointment_booked as appointmentBooked, sale_status as saleStatus, expected_value_minor as expectedValueMinor, next_action as nextAction, summary, opt_out as optOut, received_at as receivedAt FROM calls WHERE lead_id = ? ORDER BY received_at DESC LIMIT 1',
+      )
+      .get(leadId) as
+      | (Omit<CallOutcome, 'connected' | 'qualified' | 'appointmentBooked' | 'optOut'> & {
+          connected: number;
+          qualified: number;
+          appointmentBooked: number;
+          optOut: number;
+        })
+      | undefined;
+    if (!row) return undefined;
+    return {
+      ...row,
+      connected: row.connected === 1,
+      qualified: row.qualified === 1,
+      appointmentBooked: row.appointmentBooked === 1,
+      optOut: row.optOut === 1,
+    };
+  }
+
+  recordRevenue(leadId: string, amountMinor: number, source: string): void {
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO revenue (revenue_id, lead_id, amount_minor, source, recorded_at) VALUES (?,?,?,?,?)',
+      )
+      .run(`rev_${leadId}`, leadId, amountMinor, source, now());
+  }
+
+  recordSpend(p: SpendPoint): void {
+    this.db
+      .prepare('INSERT INTO spend (run_id, ad_id, spend_minor, impressions, clicks, leads, as_of) VALUES (?,?,?,?,?,?,?)')
+      .run(p.runId, p.adId, p.spendMinor, p.impressions, p.clicks, p.leads, p.asOf);
+  }
+
+  /** Latest spend snapshot per ad. Meta insights are cumulative, so take the max. */
+  spendByAd(
+    runId: string,
+  ): Array<{ adId: string | null; spendMinor: number; impressions: number; clicks: number; leads: number }> {
+    return this.db
+      .prepare(
+        `SELECT ad_id as adId,
+                MAX(spend_minor) as spendMinor,
+                MAX(impressions) as impressions,
+                MAX(clicks) as clicks,
+                MAX(leads) as leads
+         FROM spend WHERE run_id = ? GROUP BY ad_id`,
+      )
+      .all(runId) as never;
+  }
+
+  totalSpendMinor(runId: string): number {
+    return this.spendByAd(runId).reduce((sum, row) => sum + row.spendMinor, 0);
+  }
+}

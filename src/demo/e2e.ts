@@ -1,0 +1,208 @@
+import type { Context } from '../orchestrator.ts';
+import type { MockMetaProvider } from '../meta/mock.ts';
+import type { MockVoiceProvider } from '../voice/mock.ts';
+import type { Brief } from '../core/types.ts';
+import { generateBrief } from '../brief/generator.ts';
+import { approve, requestGate1, requestGate2, GATE_2 } from '../approvals/gates.ts';
+import { publishCampaign, syncInsights } from '../meta/publisher.ts';
+import { intakeLead } from '../pipeline/intake.ts';
+import { dispatchLead } from '../pipeline/dispatch.ts';
+import { handleCallWebhook } from '../pipeline/webhooks.ts';
+import { evaluate, proposeBudget } from '../economics/decision.ts';
+import { formatBrief, formatRecommendation } from '../report.ts';
+import { money } from '../core/util.ts';
+
+/**
+ * The 48-hour MVP, compressed into one command.
+ *
+ * Runs phases A-H against the mock providers so the closed loop can be shown
+ * end to end with no spend and no real calls: brief -> gate #1 -> publish ->
+ * lead -> voice call -> structured outcome -> attribution -> decision -> gate #2.
+ */
+export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?: number } = {}): Promise<void> {
+  const days = opts.days ?? 7;
+  const { store, guardrails: g } = ctx;
+  const meta = ctx.meta as MockMetaProvider;
+  const voice = ctx.voice as MockVoiceProvider;
+
+  if (ctx.meta.kind !== 'mock' || ctx.voice.kind !== 'mock') {
+    throw new Error('demo only runs against mock providers; set FL_MODE=mock');
+  }
+
+  say('PHASE A  control layer');
+  say(`  geo ${g.allowedGeos.join(',')}  daily cap ${money(g.maxDailySpendMinor, g.currency)}  test budget ${money(g.maxTestBudgetMinor, g.currency)}  stop-loss ${money(g.stopLossMinor, g.currency)}`);
+  say(`  excluded niches: ${g.excludedNiches.length} entries   special ad categories: ${g.specialAdCategoriesAllowed ? 'ALLOWED' : 'blocked'}`);
+
+  say('\nPHASE B  AI brief');
+  const { brief, claimIssues, promiseDrift, rejectedNiches } = await generateBrief(g, {
+    anthropicKey: ctx.env.anthropicKey || undefined,
+  });
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  say(`  run ${runId}`);
+  say(indent(formatBrief(brief, g)));
+  if (rejectedNiches.length) {
+    say(`  niches rejected by guardrails: ${rejectedNiches.map((r) => r.name).join('; ')}`);
+  }
+
+  say('\nPHASE C  human gate #1');
+  const dailyBudgetMinor = Math.min(g.maxDailySpendMinor, Math.round(g.maxTestBudgetMinor / days));
+  const gate1 = requestGate1(store, g, runId, brief, dailyBudgetMinor);
+  if (claimIssues.length || promiseDrift.length || gate1.blocking.length) {
+    say('  BLOCKED - the brief has issues a human must not be asked to wave through:');
+    for (const issue of gate1.blocking) say(`    - ${issue}`);
+    say('  demo stops here; regenerate the brief.');
+    return;
+  }
+  say(`  approval ${gate1.approvalId} requested; no claim or promise-drift issues found`);
+  approve(store, gate1.approvalId, 'demo-operator');
+  say('  approved by demo-operator (in production this is a person reading the summary above)');
+
+  say('\nPHASE D  Meta execution');
+  const published = await publishCampaign(store, meta, g, runId, brief, ctx.env.meta.pageId || 'mock_page', {
+    dailyBudgetMinor,
+    windowDays: days,
+    activate: true,
+  });
+  say(`  campaign ${published.campaign.campaignId} / adset ${published.campaign.adsetId}`);
+  say(`  ${published.ads.length} ads live at ${money(dailyBudgetMinor, g.currency)}/day for ${days} days`);
+
+  say('\nPHASE E+F  leads -> voice -> structured outcomes');
+  let leadsSeen = 0;
+  for (let day = 1; day <= days; day += 1) {
+    meta.tick();
+    const before = new Map(store.spendByAd(runId).map((r) => [r.adId, r.leads]));
+    await syncInsights(store, meta, runId);
+    const after = store.spendByAd(runId);
+
+    for (const row of after) {
+      if (!row.adId) continue;
+      const newLeads = row.leads - (before.get(row.adId) ?? 0);
+      const ad = store.listAds(published.campaign.campaignId).find((a) => a.adId === row.adId);
+      if (!ad || newLeads <= 0) continue;
+
+      for (let i = 0; i < newLeads; i += 1) {
+        leadsSeen += 1;
+        const intake = intakeLead(store, g, runId, {
+          name: `Demo Lead ${leadsSeen}`,
+          phone: `9${String(800000000 + leadsSeen * 137)}`,
+          consent: true,
+          consentSource: 'meta_instant_form',
+          campaignId: published.campaign.campaignId,
+          adsetId: published.campaign.adsetId,
+          adId: ad.adId,
+          creativeId: ad.creativeId,
+        });
+        if (intake.status !== 'accepted') continue;
+
+        const dispatch = await dispatchLead(store, voice, g, intake.lead, brief, 'http://localhost/demo', {
+          // The mock voice agent uses this to correlate outcome quality with the
+          // creative, so the decision engine has a real signal to find.
+          creative_quality: meta.quality(ad.adId).toFixed(3),
+        });
+        if (dispatch.status !== 'dispatched') continue;
+
+        const outcome = voice.simulateOutcome(dispatch.callRef);
+        handleCallWebhook(store, {
+          call_id: outcome.callId,
+          lead_id: outcome.leadId,
+          connected: outcome.connected,
+          qualified: outcome.qualified,
+          intent_score: outcome.intentScore,
+          objection: outcome.objection,
+          appointment_booked: outcome.appointmentBooked,
+          sale_status: outcome.saleStatus,
+          expected_value: outcome.expectedValueMinor / 100,
+          next_action: outcome.nextAction,
+          summary: outcome.summary,
+          opt_out: outcome.optOut,
+        });
+      }
+    }
+    say(`  day ${day}: ${store.countLeads(runId)} leads captured and called so far`);
+  }
+
+  say('\nPHASE G  AI review');
+  const rec = evaluate(store, g, runId, brief);
+  say(indent(formatRecommendation(rec, g)));
+
+  say('\nPHASE H  human gate #2');
+  const budget = proposeBudget(g, published.campaign.dailyBudgetMinor, rec.decision);
+  if (budget.proposedDailyMinor !== published.campaign.dailyBudgetMinor) {
+    if (budget.needsApproval) {
+      const gate2 = requestGate2(store, runId, `Raise daily budget to ${money(budget.proposedDailyMinor, g.currency)}`, {
+        from: published.campaign.dailyBudgetMinor,
+        to: budget.proposedDailyMinor,
+        reason: budget.reason,
+      });
+      say(`  approval ${gate2.approvalId} pending: ${gate2.summary} (${budget.reason})`);
+      say('  the agent stops here until a human decides.');
+    } else {
+      await meta.setDailyBudget(published.campaign.adsetId, budget.proposedDailyMinor);
+      store.setCampaignBudget(published.campaign.campaignId, budget.proposedDailyMinor);
+      say(`  budget raised to ${money(budget.proposedDailyMinor, g.currency)}/day within the approved step (${budget.reason})`);
+    }
+  } else {
+    say(`  no budget change proposed (${budget.reason})`);
+  }
+
+  // Apply the per-creative verdicts the agent is allowed to act on alone.
+  let paused = 0;
+  for (const adDecision of rec.perAd) {
+    if (adDecision.decision === 'KILL') {
+      await meta.setStatus(adDecision.adId, 'PAUSED');
+      store.setAdStatus(adDecision.adId, 'PAUSED');
+      paused += 1;
+    }
+  }
+  if (paused) say(`  paused ${paused} underperforming creative(s) inside the existing cap`);
+
+  say('\nSUCCESS CONDITION');
+  say(indent(attributionProof(ctx, runId, brief)));
+  say(`\n  pending approvals: ${store.pendingApprovals(runId).length}`);
+  say(`  audit events: ${store.auditTrail(runId).length}`);
+  say(`  run id: ${runId}   (inspect with: node src/cli.ts review ${runId})`);
+}
+
+/**
+ * The playbook's success condition: one real lead travels end to end and the
+ * system can name the exact ad that produced the outcome.
+ */
+function attributionProof(ctx: Context, runId: string, brief: Brief): string {
+  const row = ctx.store.db
+    .prepare(
+      `SELECT l.lead_id AS leadId, l.ad_id AS adId, l.creative_id AS creativeId,
+              c.connected, c.qualified, c.sale_status AS saleStatus, c.next_action AS nextAction
+       FROM leads l JOIN calls c ON c.lead_id = l.lead_id
+       WHERE l.run_id = ?
+       ORDER BY c.qualified DESC, c.connected DESC, c.received_at ASC
+       LIMIT 1`,
+    )
+    .get(runId) as
+    | { leadId: string; adId: string; creativeId: string; connected: number; qualified: number; saleStatus: string; nextAction: string }
+    | undefined;
+
+  if (!row) return 'No lead completed the loop in this run - nothing to attribute.';
+
+  const creative = brief.creatives.find((c) => c.creativeId === row.creativeId);
+  return [
+    `lead ${row.leadId}`,
+    `  came from ad ${row.adId}`,
+    `  creative ${row.creativeId} - ${creative ? `${creative.angle} / "${creative.hook}"` : 'unknown'}`,
+    `  call connected=${row.connected === 1} qualified=${row.qualified === 1} sale=${row.saleStatus}`,
+    `  next action: ${row.nextAction}`,
+  ].join('\n');
+}
+
+function say(text: string): void {
+  process.stdout.write(`${text}\n`);
+}
+
+function indent(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line ? `  ${line}` : line))
+    .join('\n');
+}
+
+export { GATE_2 };

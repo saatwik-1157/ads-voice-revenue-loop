@@ -82,6 +82,20 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write(`run ${runId}\n\n`);
         process.stdout.write(`${formatBrief(result.brief, ctx.guardrails)}\n\n`);
 
+        // Artwork is produced before the gate, not after it: gate #1 asks a
+        // person to approve the creative, and they cannot do that without it.
+        process.stdout.write(`producing artwork with the ${ctx.assets.kind} provider\n`);
+        for (const outcome of await ensureCreativeAssets(ctx.store, ctx.meta, ctx.assets, runId, result.brief, {
+          previewDir: ctx.env.previewDir,
+        })) {
+          process.stdout.write(
+            outcome.status === 'failed'
+              ? `  FAILED  ${outcome.creativeId}: ${outcome.error}\n`
+              : `  ${outcome.creativeId}  ${outcome.previewPath ?? outcome.assetRef}\n`,
+          );
+        }
+        process.stdout.write('\n');
+
         const budget = Math.min(ctx.guardrails.maxDailySpendMinor, Math.round(ctx.guardrails.maxTestBudgetMinor / 3));
         const gate = requestGate1(ctx.store, ctx.guardrails, runId, result.brief, budget, result.reviewFlags);
         process.stdout.write(`GATE #1 requested: ${gate.approvalId}\n${gate.summary}\n`);

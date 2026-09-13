@@ -12,7 +12,25 @@ import type { CallScript, CreativeVariant, Offer, ScoredNiche } from '../core/ty
  * deterministic writer in brief/generator.ts and the loop still runs end to end.
  */
 
-export const MODEL = 'claude-opus-5';
+/**
+ * Sonnet 5 drafts the brief. This is copywriting against a tight, heavily
+ * constrained spec whose output is re-validated locally either way, so it does
+ * not need the top of the range - and `brief` is a billed call every time.
+ *
+ * Override with FL_BRIEF_MODEL to try another without touching code.
+ */
+export const DEFAULT_MODEL = 'claude-sonnet-5';
+
+/**
+ * An `FL_BRIEF_MODEL=` line with no value arrives as an empty string, not
+ * undefined, so `??` would happily send "" as the model and earn a confusing
+ * 400. Anything blank falls back to the default.
+ */
+export function resolveBriefModel(raw: string | undefined = process.env.FL_BRIEF_MODEL): string {
+  return raw?.trim() || DEFAULT_MODEL;
+}
+
+export const MODEL = resolveBriefModel();
 
 export interface DraftedBrief {
   offer: Offer;

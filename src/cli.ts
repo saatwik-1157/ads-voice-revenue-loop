@@ -27,6 +27,7 @@ Commands
   assets [runId] [--force]        Produce and upload artwork for each creative
   publish <runId> [--budget MAJOR] [--days N] [--lead-form ID] [--activate]
   sync <runId>                    Pull Meta insights into the local store
+  economics <runId>               Funnel numbers only: spend -> leads -> calls -> sales
   review <runId>                  Phase G: economics + KEEP/KILL/ITERATE/SCALE
   apply <runId>                   Act on the last review, within the caps
   cycle [runId]                   Run one evaluation cycle now (sync + review + apply)

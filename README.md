@@ -29,7 +29,7 @@ a sale can be attributed to the exact hook that paid for it.
 | Playbook phase | Where it lives | State |
 |---|---|---|
 | A. Control layer | [`src/config/guardrails.ts`](src/config/guardrails.ts), [`config/guardrails.json`](config/guardrails.json) | complete |
-| B. AI brief | [`src/brief/`](src/brief) | complete (Claude Sonnet 5, with a deterministic offline writer) |
+| B. AI brief | [`src/brief/`](src/brief) | complete; the offline writer is what has actually been exercised — see [Credentials](#credentials) |
 | C. Human gate #1 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
 | D. Meta execution | [`src/meta/`](src/meta) | API client complete; **untested against a live ad account** |
 | E. Lead handoff | [`src/pipeline/intake.ts`](src/pipeline/intake.ts), [`dispatch.ts`](src/pipeline/dispatch.ts) | complete |
@@ -48,20 +48,45 @@ Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is 
 
 ```bash
 npm install
-node src/cli.ts demo          # the whole loop, mocked, ~2 seconds
-npm test                      # 94 tests covering the guardrails, the loop, retries, scheduling and creative
+node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
+npm test                      # 96 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
+
+### Credentials
+
+**Nothing here needs an API key.** With no credentials the loop runs end to end against the mock
+providers, and the brief is written by a deterministic offline writer and labelled as such:
+
+```
+BRIEF brief_9ce6ab16db8d462e  (written by: deterministic)
+```
+
+Give it a credential and Claude drafts the brief instead. Three sources are honoured, because the
+SDK resolves all three and gating on the API key alone silently downgrades anyone who authenticated
+another way:
+
+| Source | How |
+|---|---|
+| `ANTHROPIC_API_KEY` | a line in `.env`, or the environment |
+| `ANTHROPIC_AUTH_TOKEN` | the environment |
+| an `ant auth login` profile | `~/.config/anthropic` on disk |
+
+`FL_BRIEF_MODEL` overrides the model (default `claude-sonnet-5`). A blank value falls back to the
+default rather than sending an empty model, and an obvious placeholder (`sk-ant-REPLACE-ME` and
+friends) counts as no key at all — otherwise it is truthy, earns a 401, and falls back to the offline
+writer anyway with a confusing error in between.
 
 ### Commands
 
 ```bash
 node src/cli.ts guardrails                          # print the active control layer
-node src/cli.ts brief --deal-value 5000             # phase B, opens gate #1
+node src/cli.ts brief --deal-value 5000             # phase B: brief + artwork, opens gate #1
 node src/cli.ts approvals                           # what is waiting on a human
 node src/cli.ts assets [runId] [--force]            # produce + upload artwork
 node src/cli.ts approve <approvalId> --by "Nitesh"  # phase C
 node src/cli.ts publish <runId> --budget 700 --days 5 --activate
 node src/cli.ts sync <runId>                        # pull Meta insights
+node src/cli.ts economics <runId>                   # the funnel numbers on their own
 node src/cli.ts review <runId>                      # phase G: economics + decision
 node src/cli.ts apply <runId>                       # act on it, inside the caps
 node src/cli.ts cycle [runId]                       # one unattended cycle: sync + review + apply
@@ -293,8 +318,9 @@ These are enforced in code, not just documented:
 
 1. Fill in `.env` from `.env.example` and set `FL_MODE=live`. The process refuses to start with
    incomplete credentials rather than half-publishing a campaign.
-2. Create the Meta instant form on your Page, and upload creative assets to get an `image_hash`.
-   Publishing a creative without one is refused.
+2. Create the Meta instant form on your Page and pass its id with `--lead-form`. Artwork is handled
+   for you — drop cleared files in `assets/` or let the generated fallback produce them; either way
+   `brief` uploads them and publishing a creative without an `image_hash` is refused.
 3. Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `OMNI_WEBHOOK_SECRET` and `FL_ADMIN_TOKEN`.
    Expose the server (`node src/cli.ts serve`) at a public HTTPS URL and point both webhooks at it:
    - `POST /webhooks/meta` — leadgen (verify subscription at `GET /webhooks/meta`)
@@ -321,10 +347,16 @@ it is reading someone else's schema.
   multi-touch model.
 - **The AI writes; it does not decide.** Claude drafts the brief and its output is re-validated
   locally. Every spend, publish and dial decision is made by the rules in this repo.
-- **Drafting runs on `claude-sonnet-5`.** It is copy written against a tight spec that gets checked
-  locally either way, and `brief` is a billed call every time it runs. Set `FL_BRIEF_MODEL` to use
-  something else. Without any credential the deterministic writer takes over and the brief is
-  labelled `written by: deterministic`.
+- **The model path is wired but unexercised.** Everything shown and tested here ran through the
+  deterministic writer; `draftBrief` has never been run against a live API key. The request shape is
+  type-checked against the SDK and the local re-validation applies either way, but treat the first
+  real call as untested code.
+- **Drafting runs on `claude-sonnet-5`** and `brief` is a billed call every time it runs. It is copy
+  written against a tight spec that gets checked locally regardless, so it does not need the top of
+  the range; `FL_BRIEF_MODEL` changes it.
+- **The offline writer gives every variant the same headline and body.** Only the hook and the
+  palette differ, so six generated creatives are a thin creative test on their own. Real artwork in
+  `assets/`, or a model-written brief, is what makes the six worth testing against each other.
 
 ## Layout
 
@@ -332,7 +364,8 @@ it is reading someone else's schema.
 src/
   config/      control layer (guardrails) + env
   core/        types, ids, phone normalization, redaction
-  store/       SQLite: runs, briefs, approvals, campaigns, leads, calls, revenue, audit, idempotency
+  store/       SQLite: runs, briefs, approvals, campaigns, leads, calls, revenue,
+               spend, suppression, cycles, locks, audit, idempotency
   brief/       niche scoring, offer + creative + script, claim checking, Claude adapter
   meta/        provider interface, Marketing API client, mock delivery, publisher
   voice/       provider interface, OmniDimension client, mock voice agent

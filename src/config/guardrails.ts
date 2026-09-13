@@ -37,6 +37,14 @@ export interface Guardrails {
   /** Budget above this level always needs gate #2, regardless of profitability. */
   budgetApprovalThresholdMinor: number;
   minLeadsBeforeDecision: number;
+  /** How often the unattended evaluation cycle runs. */
+  evaluationIntervalHours: number;
+  /**
+   * Floor between two budget increases, regardless of how often the cycle runs.
+   * maxBudgetStepFactor is per decision, so without this a 6-hourly scheduler
+   * would compound it four times a day and quietly outrun the control layer.
+   */
+  minHoursBetweenBudgetRaises: number;
   minSpendBeforeKillMinor: number;
   callWindow: { startHour: number; endHour: number; timeZone: string };
   maxCallAttemptsPerLead: number;
@@ -61,6 +69,8 @@ const DEFAULTS: Guardrails = {
   maxBudgetStepFactor: 1.3,
   budgetApprovalThresholdMinor: 300000,
   minLeadsBeforeDecision: 15,
+  evaluationIntervalHours: 24,
+  minHoursBetweenBudgetRaises: 24,
   minSpendBeforeKillMinor: 100000,
   callWindow: { startHour: 9, endHour: 20, timeZone: 'Asia/Kolkata' },
   maxCallAttemptsPerLead: 2,
@@ -107,6 +117,8 @@ export function validate(g: Guardrails): void {
   if (g.callWindow.startHour >= g.callWindow.endHour) {
     problems.push('callWindow.startHour must be before endHour');
   }
+  if (g.evaluationIntervalHours <= 0) problems.push('evaluationIntervalHours must be > 0');
+  if (g.minHoursBetweenBudgetRaises < 0) problems.push('minHoursBetweenBudgetRaises cannot be negative');
   if (problems.length) throw new Error(`Invalid guardrails:\n - ${problems.join('\n - ')}`);
 }
 

@@ -36,6 +36,7 @@ a sale can be attributed to the exact hook that paid for it.
 | F. Call result | [`src/pipeline/webhooks.ts`](src/pipeline/webhooks.ts) | complete; payload shape needs confirming against your OmniDimension agent |
 | G. AI review | [`src/economics/`](src/economics) | complete |
 | H. Human gate #2 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
+| (G on a timer) | [`src/scheduler.ts`](src/scheduler.ts) | complete — `cycle`, `schedule`, `serve --schedule` |
 
 Two things are deliberately **not** built, because they need your accounts to be meaningful:
 creative asset generation (an ad creative needs a real `image_hash`/`video_id` — the publisher
@@ -49,7 +50,7 @@ Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is 
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2 seconds
-npm test                      # 61 tests covering the guardrails, the loop and the retry paths
+npm test                      # 76 tests covering the guardrails, the loop, retries and the scheduler
 ```
 
 ### Commands
@@ -63,7 +64,10 @@ node src/cli.ts publish <runId> --budget 700 --days 5 --activate
 node src/cli.ts sync <runId>                        # pull Meta insights
 node src/cli.ts review <runId>                      # phase G: economics + decision
 node src/cli.ts apply <runId>                       # act on it, inside the caps
-node src/cli.ts serve                               # webhook middleware
+node src/cli.ts cycle [runId]                       # one unattended cycle: sync + review + apply
+node src/cli.ts schedule --every 6h                 # the cycle on a loop
+node src/cli.ts cycles [runId]                      # what the loop has been doing
+node src/cli.ts serve --schedule --every 6h         # webhook middleware + the loop
 ```
 
 Money is passed to the CLI in major units (`--budget 700` = ₹700/day) and stored in minor units
@@ -107,6 +111,8 @@ propose changes to it; only a person editing the file can widen it.
   "maxTestBudgetMinor": 500000,
   "stopLossMinor": 300000,
   "budgetApprovalThresholdMinor": 200000,
+  "evaluationIntervalHours": 24,
+  "minHoursBetweenBudgetRaises": 24,
   "callWindow": { "startHour": 10, "endHour": 19, "timeZone": "Asia/Kolkata" }
 }
 ```
@@ -182,6 +188,46 @@ except the winner" are the same statement. `planScale` treats them that way:
   cohort with no test budget cannot find its own replacement, so that decision belongs to a person
   who can decide to add new variants.
 
+## Running it unattended
+
+`sync` -> `review` -> `apply` is the loop, and until something runs it on a timer the "autonomous"
+part is aspirational. One **cycle** is the unit of work:
+
+```bash
+node src/cli.ts cycle                      # one cycle, every live run
+node src/cli.ts schedule --every 6h        # the same thing on a loop
+node src/cli.ts serve --schedule           # server and loop in one process
+node src/cli.ts cycles                     # what it did, and when
+```
+
+`schedule` defaults to `evaluationIntervalHours`. For a one-shot under cron or Windows Task
+Scheduler, use `cycle` — it is idempotent and safe to fire repeatedly.
+
+What a cycle may do on its own: pull insights, evaluate, pause creatives the engine condemned, and
+step budget up inside the approved band. What it may not do: widen a guardrail, resume a run a human
+paused, or approve its own gate #2.
+
+Four things make it safe to leave running:
+
+- **Budget steps are rate-limited, not just size-limited.** `maxBudgetStepFactor` caps one decision.
+  Left at that, a 6-hourly loop would compound 1.3× four times a day — **2.86×** — while every
+  individual step still looked compliant. `minHoursBetweenBudgetRaises` is the floor that stops it,
+  and it is enforced only for unattended runs; a person typing `apply` has already decided to act.
+- **One pending gate #2, not one per cycle.** A decision waiting on a person is signal; a hundred
+  copies of it is noise that buries the first one. If a request is already pending, the cycle reports
+  that it is waiting and files nothing.
+- **A leased lock per run.** Two overlapping cycles would double-count a budget step and race on
+  pauses. The lease matters as much as the lock: a cycle killed mid-run releases it automatically
+  rather than wedging the loop forever.
+- **Failures are recorded, not thrown.** A provider outage ends that cycle with `error` in the
+  `cycles` table and an audit event; the loop keeps its schedule. There is no catch-up burst either —
+  if the process was down for a day, the right move is one cycle now, not twenty-four against stale
+  data.
+
+Ctrl-C finishes the cycle in flight and then exits. (On Windows, Node does not receive `SIGTERM` from
+an external kill, so an unattended deployment there should stop the process via Ctrl-C or the service
+manager rather than `taskkill` mid-cycle; the lock lease covers it either way.)
+
 ## Safety and platform rules
 
 These are enforced in code, not just documented:
@@ -254,6 +300,8 @@ src/
   pipeline/    lead intake, dispatch, webhooks
   economics/   funnel metrics, decision engine
   approvals/   human gates #1 and #2
+  scheduler.ts the unattended evaluation cycle and its loop
+  apply.ts     the one path both `apply` and the scheduler act through
   server/      webhook middleware
   demo/        the 48-hour MVP in one command
 ```

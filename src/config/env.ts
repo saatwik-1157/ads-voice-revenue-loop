@@ -33,7 +33,15 @@ export interface Env {
     appSecret: string;
     verifyToken: string;
   };
-  omni: { apiKey: string; agentId: string; baseUrl: string; webhookSecret: string };
+  omni: {
+    apiKey: string;
+    agentId: string;
+    baseUrl: string;
+    /** Preferred: HMAC over the raw body. */
+    webhookSecret: string;
+    /** Fallback for providers that can only attach a static header. */
+    webhookToken: string;
+  };
   anthropicKey: string;
   dbPath: string;
   /** Directory of cleared artwork; used when it contains any images. */
@@ -64,6 +72,7 @@ export function env(): Env {
       agentId: process.env.OMNI_AGENT_ID ?? '',
       baseUrl: process.env.OMNI_BASE_URL ?? 'https://api.omnidim.io/api/v1',
       webhookSecret: process.env.OMNI_WEBHOOK_SECRET ?? '',
+      webhookToken: process.env.OMNI_WEBHOOK_TOKEN ?? '',
     },
     anthropicKey: process.env.ANTHROPIC_API_KEY ?? '',
     dbPath: process.env.FL_DB_PATH ?? 'data/autopilot.db',

@@ -315,7 +315,7 @@ async function main(argv: string[]): Promise<number> {
           process.stdout.write(`listening on http://localhost:${ctx.env.port}  (mode=${ctx.env.mode})\n`);
           process.stdout.write(`  Meta leadgen webhook  POST ${ctx.env.publicBaseUrl}/webhooks/meta\n`);
           process.stdout.write(`  Voice result webhook  POST ${voiceWebhookUrl(ctx.env)}\n`);
-          if (!ctx.env.meta.appSecret || !ctx.env.omni.webhookSecret) {
+          if (!ctx.env.meta.appSecret || !(ctx.env.omni.webhookSecret || ctx.env.omni.webhookToken)) {
             process.stdout.write('  WARNING: webhook secrets are unset, so every inbound payload will be rejected.\n');
           }
         });

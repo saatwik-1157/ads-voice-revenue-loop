@@ -113,6 +113,23 @@ function normalizeSaleStatus(value: string | undefined): CallOutcome['saleStatus
 }
 
 /**
+ * Constant-time equality for a shared secret presented as a header.
+ *
+ * Weaker than an HMAC - it proves the sender knows a secret, not that the body
+ * is untampered, and it is replayable by anyone who captures it. It exists
+ * because a voice platform that can only attach a static header would otherwise
+ * have no way to authenticate at all, and a documented weaker check beats an
+ * open endpoint that places phone calls.
+ */
+export function verifyToken(provided: string, expected: string): boolean {
+  if (!expected || !provided) return false;
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/**
  * Verify an inbound webhook signature. Both Meta and OmniDimension sign with an
  * HMAC over the raw body; an unsigned or mismatched payload is dropped, because
  * anything that reaches these handlers can create calls and move money.

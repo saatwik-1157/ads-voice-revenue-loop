@@ -1,4 +1,5 @@
 import { createContext, voiceWebhookUrl, type Context } from './orchestrator.ts';
+import { hasAnthropicCredentials } from './config/env.ts';
 import { createHttpServer } from './server/http.ts';
 import { generateBrief } from './brief/generator.ts';
 import { approve, reject, requestGate1 } from './approvals/gates.ts';
@@ -75,6 +76,7 @@ async function main(argv: string[]): Promise<number> {
         const dealValueMinor = flags['deal-value'] ? Math.round(Number(flags['deal-value']) * 100) : undefined;
         const result = await generateBrief(ctx.guardrails, {
           anthropicKey: ctx.env.anthropicKey || undefined,
+          useModel: hasAnthropicCredentials(ctx.env),
           dealValueMinor,
         });
         const runId = ctx.store.createRun(result.brief.niche.name);

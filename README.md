@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 199 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 206 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -355,8 +355,17 @@ These are enforced in code, not just documented:
 - **Authorized interfaces only.** Meta is reached through the Marketing API
   ([`src/meta/api.ts`](src/meta/api.ts)). There is no browser automation, no scraping, no UI
   mimicry, and `MetaProvider` has exactly two implementations so there is no place to add one.
-- **Idempotency everywhere.** Campaign creation, ad creation, call dispatch and inbound webhooks all
-  go through a keyed idempotency table, so a retry cannot duplicate a campaign, a call or a payment.
+- **Idempotency everywhere, and the key is claimed before the work starts.** Campaign creation, ad
+  creation, call dispatch and inbound webhooks all go through a keyed idempotency table, so a retry
+  cannot duplicate a campaign, a call or a payment. The claim ordering is the substance: the table
+  used to be written *after* the operation, so two concurrent callers both saw no row, both did the
+  work, and the loser hit a UNIQUE constraint — meaning a redelivered lead webhook placed a second
+  call to the same person and reported it as a database error, which reads like nothing happened.
+  Sequential redelivery was always correct, which is why the tests passed; a provider's retries are
+  the concurrent case. The claim is now one `INSERT … ON CONFLICT DO NOTHING`, so SQLite decides the
+  winner rather than the order two reads happen to interleave in, and the loser is told the work is
+  already in flight instead of repeating it. A failed operation releases its key so a retry can run,
+  which is safe because the provider call carries its own idempotency key too.
 - **Transient failures are retried; permanent ones are not.** A 429, a 5xx or a dropped connection
   is retried with exponential backoff and full jitter, honouring `Retry-After` when the server sends
   one. A 4xx is a bug in the request and is thrown straight at you rather than burning the rate
@@ -477,6 +486,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         199 tests, run by `npm test` and on every push
+tests/         206 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

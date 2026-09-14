@@ -158,6 +158,11 @@ export interface SpendPoint {
 export interface Economics {
   spendMinor: number;
   leads: number;
+  /**
+   * Leads that arrived with no ad id. They count here and are invisible to
+   * every per-ad view, so a gap between the two is a broken round trip.
+   */
+  unattributedLeads: number;
   /** Leads a call outcome has come back for. The population dialling is judged on. */
   calledLeads: number;
   /** Accepted leads not dialled yet - deferred outside the window, or queued. */

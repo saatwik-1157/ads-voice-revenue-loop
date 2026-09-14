@@ -27,6 +27,7 @@ import { divide } from '../core/util.ts';
 function funnelSql(scope: string): string {
   return `SELECT
        COUNT(DISTINCT l.lead_id) AS leads,
+       COUNT(DISTINCT CASE WHEN l.ad_id IS NULL OR l.ad_id = '' THEN l.lead_id END) AS unattributed,
        COUNT(DISTINCT CASE WHEN c.call_id IS NOT NULL THEN l.lead_id END) AS called,
        COUNT(DISTINCT CASE WHEN l.call_status = 'pending' THEN l.lead_id END) AS awaiting,
        COUNT(DISTINCT CASE WHEN c.connected = 1 THEN l.lead_id END) AS connected,
@@ -39,6 +40,7 @@ function funnelSql(scope: string): string {
 
 interface FunnelRow {
   leads: number;
+  unattributed: number;
   called: number;
   awaiting: number;
   connected: number;
@@ -80,6 +82,7 @@ function compose(spendMinor: number, rows: FunnelRow, revenueMinor: number): Eco
   return {
     spendMinor,
     leads: rows.leads,
+    unattributedLeads: rows.unattributed,
     calledLeads: rows.called,
     leadsAwaitingCall: rows.awaiting,
     connectedLeads: rows.connected,

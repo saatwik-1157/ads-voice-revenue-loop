@@ -27,9 +27,19 @@ export function formatBrief(brief: Brief, g: Guardrails): string {
 }
 
 export function formatEconomics(e: Economics, g: Guardrails): string {
+  // Shown only when non-zero. A line that reads 0 every time is a line nobody
+  // reads, and these two exist to be noticed on the day they are not 0.
+  const attention = [
+    e.unattributedLeads > 0
+      ? `  unattributed     ${e.unattributedLeads}   (no ad id - counted here, invisible to every per-ad number)`
+      : null,
+    e.leadsAwaitingCall > 0 ? `  awaiting a call  ${e.leadsAwaitingCall}   (deferred or queued, not yet dialled)` : null,
+  ].filter((line): line is string => line !== null);
+
   return [
     `  spend            ${money(e.spendMinor, g.currency)}`,
     `  leads            ${e.leads}`,
+    ...attention,
     `  leads reached    ${e.connectedLeads}   (${pct(e.connectRate)})`,
     `  qualified leads  ${e.qualifiedLeads}   (${pct(e.qualifyRate)} of connected)`,
     `  appointments     ${e.appointments}`,

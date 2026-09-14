@@ -13,6 +13,7 @@ const G = { ...defaultGuardrails, holdoutBudgetShare: 0.2, maxBudgetStepFactor: 
 const EMPTY: Economics = {
   spendMinor: 0,
   leads: 0,
+  unattributedLeads: 0,
   calledLeads: 0,
   leadsAwaitingCall: 0,
   connectedLeads: 0,

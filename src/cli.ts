@@ -6,6 +6,7 @@ import { GuardrailConfigError, GuardrailViolation } from './config/guardrails.ts
 import { AssetError } from './creative/provider.ts';
 import { MetaApiError } from './meta/provider.ts';
 import { VoiceApiError } from './voice/provider.ts';
+import { OperationInFlightError } from './store/db.ts';
 
 /**
  * The entry point, and nothing else.
@@ -66,6 +67,11 @@ function report(err: unknown): number {
   }
   if (err instanceof AssetError || err instanceof MetaApiError || err instanceof VoiceApiError) {
     process.stderr.write(`${err.name}: ${err.message}\n`);
+    return 1;
+  }
+  if (err instanceof OperationInFlightError) {
+    process.stderr.write(`${err.message}\n`);
+    process.stderr.write('another process is doing this right now. nothing was done twice.\n');
     return 1;
   }
   // Another process was mid-write and did not let go inside the busy timeout.

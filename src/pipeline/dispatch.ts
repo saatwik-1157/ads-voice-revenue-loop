@@ -1,4 +1,4 @@
-import type { Store } from '../store/db.ts';
+import { OperationInFlightError, type Store } from '../store/db.ts';
 import type { VoiceProvider } from '../voice/provider.ts';
 import type { Brief, Lead } from '../core/types.ts';
 import { isWithinCallWindow, type Guardrails } from '../config/guardrails.ts';
@@ -88,15 +88,27 @@ export async function dispatchLead(
     ...extraMetadata,
   };
 
-  const { callRef } = await store.onceAsync('voice.dispatch', [lead.leadId], () =>
-    voice.dispatchCall({
-      lead,
-      brief,
-      metadata,
-      webhookUrl,
-      idempotencyKey: `call:${lead.leadId}`,
-    }),
-  );
+  let callRef: string;
+  try {
+    ({ callRef } = await store.onceAsync('voice.dispatch', [lead.leadId], () =>
+      voice.dispatchCall({
+        lead,
+        brief,
+        metadata,
+        webhookUrl,
+        idempotencyKey: `call:${lead.leadId}`,
+      }),
+    ));
+  } catch (err) {
+    // A redelivered webhook arriving while the first is still dialling. The
+    // first attempt owns this call; standing down is the correct outcome, not
+    // an error, and certainly not a second ring on someone's phone.
+    if (err instanceof OperationInFlightError) {
+      store.audit(lead.runId, 'system', 'call.already_dispatching', { leadId: lead.leadId });
+      return { status: 'deferred', leadId: lead.leadId, reason: 'a call to this lead is already being placed' };
+    }
+    throw err;
+  }
 
   store.setLeadCallStatus(lead.leadId, 'dispatched');
   store.audit(lead.runId, 'voice', 'call.dispatched', {

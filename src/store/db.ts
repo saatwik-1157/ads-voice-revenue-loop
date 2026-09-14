@@ -131,6 +131,10 @@ CREATE TABLE IF NOT EXISTS idempotency (
   key TEXT PRIMARY KEY,
   operation TEXT NOT NULL,
   result TEXT NOT NULL,
+  -- 'in_flight' while the operation is running, 'done' once its result is
+  -- stored. The row is written before the work starts, so the key is what
+  -- claims the right to do it.
+  status TEXT NOT NULL DEFAULT 'done',
   created_at TEXT NOT NULL
 );
 
@@ -168,6 +172,22 @@ CREATE INDEX IF NOT EXISTS idx_spend_run ON spend(run_id);
 CREATE INDEX IF NOT EXISTS idx_audit_run ON audit(run_id);
 `;
 
+/**
+ * The same logical operation is already running somewhere else.
+ *
+ * Not a failure: it is the idempotency guarantee doing its job. Whoever holds
+ * the key will finish it, so the right response is to stand down rather than
+ * do the work a second time.
+ */
+export class OperationInFlightError extends Error {
+  readonly operation: string;
+  constructor(operation: string, key: string) {
+    super(`${operation} is already running for this key (${key}); not doing it twice`);
+    this.name = 'OperationInFlightError';
+    this.operation = operation;
+  }
+}
+
 export class Store {
   readonly db: DatabaseSync;
 
@@ -180,6 +200,22 @@ export class Store {
     // the other writer is about to finish.
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec(SCHEMA);
+    this.#migrate();
+  }
+
+  /**
+   * Changes to tables that already exist in databases created before them.
+   *
+   * CREATE TABLE IF NOT EXISTS does nothing to a table that is already there,
+   * so a column added later has to be added explicitly or it is missing on
+   * every database except a brand new one.
+   */
+  #migrate(): void {
+    const columns = this.db.prepare('PRAGMA table_info(idempotency)').all() as Array<{ name: string }>;
+    if (!columns.some((c) => c.name === 'status')) {
+      // Rows written before this existed are all completed operations.
+      this.db.exec("ALTER TABLE idempotency ADD COLUMN status TEXT NOT NULL DEFAULT 'done'");
+    }
   }
 
   /**
@@ -261,29 +297,78 @@ export class Store {
    */
   once<T>(operation: string, keyParts: unknown[], fn: () => T): T {
     const key = `${operation}:${fingerprint(keyParts)}`;
-    const existing = this.db.prepare('SELECT result FROM idempotency WHERE key = ?').get(key) as
-      | { result: string }
-      | undefined;
-    if (existing) return JSON.parse(existing.result) as T;
-    const result = fn();
-    this.db
-      .prepare('INSERT INTO idempotency (key, operation, result, created_at) VALUES (?,?,?,?)')
-      .run(key, operation, JSON.stringify(result ?? null), now());
-    return result;
+    const claim = this.#claim(key, operation);
+    if (claim.state === 'done') return JSON.parse(claim.result) as T;
+    if (claim.state === 'in_flight') throw new OperationInFlightError(operation, key);
+    try {
+      const result = fn();
+      this.#settle(key, result);
+      return result;
+    } catch (err) {
+      this.#release(key);
+      throw err;
+    }
   }
 
-  /** Async form of {@link once}, for provider calls that hit the network. */
+  /**
+   * Async form of {@link once}, for provider calls that hit the network.
+   *
+   * The key is claimed *before* the work starts. It used to be written after:
+   * read, await, write. Two concurrent callers with the same key both saw no
+   * row, both ran the operation, and the loser then hit a UNIQUE constraint on
+   * insert - so a redelivered Meta webhook placed a second call to the same
+   * person and reported it as a database error, which reads like nothing
+   * happened. Sequential redelivery was always fine, which is why every test
+   * passed; Meta's retries are the concurrent case.
+   */
   async onceAsync<T>(operation: string, keyParts: unknown[], fn: () => Promise<T>): Promise<T> {
     const key = `${operation}:${fingerprint(keyParts)}`;
-    const existing = this.db.prepare('SELECT result FROM idempotency WHERE key = ?').get(key) as
-      | { result: string }
+    const claim = this.#claim(key, operation);
+    if (claim.state === 'done') return JSON.parse(claim.result) as T;
+    if (claim.state === 'in_flight') throw new OperationInFlightError(operation, key);
+    try {
+      const result = await fn();
+      this.#settle(key, result);
+      return result;
+    } catch (err) {
+      // The work failed, so the key should not stay claimed - a retry has to be
+      // able to run. Safe because every provider call also carries its own
+      // idempotency key, so the provider deduplicates a request that did land.
+      this.#release(key);
+      throw err;
+    }
+  }
+
+  /**
+   * Take the key, or report who has it.
+   *
+   * One statement, so two processes cannot both win: SQLite settles it, not the
+   * order the reads happen to interleave in.
+   */
+  #claim(key: string, operation: string): { state: 'claimed' } | { state: 'done'; result: string } | { state: 'in_flight' } {
+    const inserted = this.db
+      .prepare(
+        `INSERT INTO idempotency (key, operation, result, status, created_at)
+         VALUES (?,?,'','in_flight',?) ON CONFLICT(key) DO NOTHING`,
+      )
+      .run(key, operation, now());
+    if (Number(inserted.changes) === 1) return { state: 'claimed' };
+
+    const existing = this.db.prepare('SELECT result, status FROM idempotency WHERE key = ?').get(key) as
+      | { result: string; status: string }
       | undefined;
-    if (existing) return JSON.parse(existing.result) as T;
-    const result = await fn();
+    if (existing?.status === 'done') return { state: 'done', result: existing.result };
+    return { state: 'in_flight' };
+  }
+
+  #settle(key: string, result: unknown): void {
     this.db
-      .prepare('INSERT INTO idempotency (key, operation, result, created_at) VALUES (?,?,?,?)')
-      .run(key, operation, JSON.stringify(result ?? null), now());
-    return result;
+      .prepare("UPDATE idempotency SET result = ?, status = 'done' WHERE key = ?")
+      .run(JSON.stringify(result ?? null), key);
+  }
+
+  #release(key: string): void {
+    this.db.prepare("DELETE FROM idempotency WHERE key = ? AND status = 'in_flight'").run(key);
   }
 
   // --- runs --------------------------------------------------------------

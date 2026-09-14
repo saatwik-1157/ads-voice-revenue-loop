@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 115 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 125 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Credentials
@@ -392,12 +392,13 @@ src/
   economics/   funnel metrics, decision engine
   approvals/   human gates #1 and #2
   creative/    asset library, generated fallback, PNG encoder, upload pipeline
+  cli/         one module per command group; help is generated from the registry
   scheduler.ts the unattended evaluation cycle and its loop
   apply.ts     the one path both `apply` and the scheduler act through
   server/      webhook middleware
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         115 tests, run by `npm test` and on every push
+tests/         125 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

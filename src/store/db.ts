@@ -491,9 +491,27 @@ export class Store {
     return row ? { ...row, consent: row.consent === 1 } : undefined;
   }
 
-  /** How many call outcomes this lead already has, for the per-lead attempt cap. */
+  /** How many call outcomes this lead row already has. */
   callCountForLead(leadId: string): number {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM calls WHERE lead_id = ?').get(leadId) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * How many times this run has called this person, across every lead row.
+   *
+   * The attempt cap protects a person, not a row, and the dedupe key includes
+   * the ad id - so one person answering two ads becomes two leads and used to
+   * get the cap twice over. Scoped to the run: a genuinely new inquiry in a
+   * later campaign is not the same as being dialled repeatedly about this one.
+   */
+  callCountForPhone(runId: string, phoneE164: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM calls c JOIN leads l ON l.lead_id = c.lead_id
+         WHERE l.run_id = ? AND l.phone_e164 = ?`,
+      )
+      .get(runId, phoneE164) as { n: number };
     return row.n;
   }
 

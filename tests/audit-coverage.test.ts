@@ -34,6 +34,7 @@ const G = { ...defaultGuardrails, callWindow: { startHour: 0, endHour: 24, timeZ
 const EMPTY: Economics = {
   spendMinor: 0,
   leads: 0,
+  unattributedLeads: 0,
   calledLeads: 0,
   leadsAwaitingCall: 0,
   connectedLeads: 0,

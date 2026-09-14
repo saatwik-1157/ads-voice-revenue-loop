@@ -344,3 +344,41 @@ test('the per-lead attempt cap is a rule, not a line in the config', async () =>
   assert.equal(audited.length, 1, 'refusing to dial again is recorded like any other refusal');
   store.close();
 });
+
+test('the attempt cap counts the person, not the lead row', async () => {
+  // The dedupe key includes the ad id, so one person answering two ads becomes
+  // two lead rows. Counting attempts per row gave them the cap twice over -
+  // four calls under a rule that says two. The rule is about a phone ringing.
+  const store = freshStore();
+  const voice = new MockVoiceProvider(11);
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const cap = { ...G, maxCallAttemptsPerLead: 2 };
+
+  const viaAdA = intakeLead(store, G, runId, { ...VALID_LEAD, adId: 'ad_a' });
+  const viaAdB = intakeLead(store, G, runId, { ...VALID_LEAD, adId: 'ad_b' });
+  if (viaAdA.status !== 'accepted' || viaAdB.status !== 'accepted') throw new Error('setup failed');
+  assert.notEqual(viaAdA.lead.leadId, viaAdB.lead.leadId, 'two ads, two lead rows, one person');
+  assert.equal(viaAdA.lead.phoneE164, viaAdB.lead.phoneE164);
+
+  let placed = 0;
+  for (const intake of [viaAdA, viaAdB]) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const result = await dispatchLead(store, voice, cap, intake.lead, brief, 'http://localhost/hook', {
+        a: `${intake.lead.leadId}:${attempt}`,
+      });
+      if (result.status !== 'dispatched') continue;
+      placed += 1;
+      handleCallWebhook(store, {
+        call_id: `c_${intake.lead.leadId}_${attempt}`,
+        lead_id: intake.lead.leadId,
+        connected: false,
+      });
+    }
+  }
+
+  assert.equal(placed, cap.maxCallAttemptsPerLead, 'the person is called twice in total, not twice per form');
+  assert.equal(store.callCountForPhone(runId, viaAdA.lead.phoneE164), 2);
+  store.close();
+});

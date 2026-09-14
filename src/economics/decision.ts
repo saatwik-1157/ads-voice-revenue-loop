@@ -23,11 +23,18 @@ export function evaluate(store: Store, g: Guardrails, runId: string, brief: Brie
     return { adId: ad.adId, creativeId: ad.creativeId, economics: e };
   });
 
+  // Per-ad judgement is only as good as the round trip that says which ad a
+  // lead came from. When leads are arriving without one, an ad's real leads
+  // are invisible to its own economics.
+  const attributionIntact = economics.unattributedLeads === 0;
+
   const signal = diagnose(economics, g, brief);
   const perAdDecisions = perAd.map((entry) => ({
     adId: entry.adId,
-    decision: judgeAd(entry.economics, g, brief, signal.decision),
-    rationale: adRationale(entry.economics, g, brief),
+    decision: judgeAd(entry.economics, g, brief, signal.decision, attributionIntact),
+    rationale: attributionIntact
+      ? adRationale(entry.economics, g, brief)
+      : `${adRationale(entry.economics, g, brief)} - judged cautiously: ${economics.unattributedLeads} lead(s) on this run carry no ad id`,
     economics: entry.economics,
   }));
 
@@ -93,6 +100,22 @@ function diagnose(e: Economics, g: Guardrails, brief: Brief): Diagnosis {
       signal: 'insufficient_data',
       rationale: `${e.leads} leads / ${money(e.spendMinor, g.currency)} spent is below the decision threshold (${g.minLeadsBeforeDecision} leads or ${money(g.minSpendBeforeKillMinor, g.currency)})`,
       action: 'Keep running unchanged until the sample is large enough to judge.',
+      requiresHumanApproval: false,
+    };
+  }
+
+  // Leads arriving with no ad id are a plumbing fault of the same family as
+  // no_leads, and a quieter one: the run total looks healthy while every
+  // per-ad view is starved, so the creative test stops being a test without
+  // anything appearing to be wrong. Checked after insufficient_data, so a run
+  // too small to judge says that rather than blaming attribution.
+  if (e.unattributedLeads * 2 >= e.leads) {
+    return {
+      decision: 'ITERATE',
+      signal: 'attribution_gap',
+      rationale: `${e.unattributedLeads} of ${e.leads} leads carry no ad id, so at least half of this run cannot be traced to a creative`,
+      action:
+        'Fix the round trip before judging creative: the instant form has to pass ad_id through, and a lead posted by hand has to carry one. Until then the per-ad numbers are a subset, not a split.',
       requiresHumanApproval: false,
     };
   }
@@ -187,12 +210,17 @@ function diagnose(e: Economics, g: Guardrails, brief: Brief): Diagnosis {
  * had a fair share of spend - otherwise the engine just kills whichever ad the
  * auction happened to starve.
  */
-function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decision): Decision {
+function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decision, attributionIntact: boolean): Decision {
   if (runDecision === 'KILL') return 'KILL';
   const minSpend = Math.round(g.minSpendBeforeKillMinor / Math.max(1, brief.creatives.length));
   if (e.spendMinor < minSpend) return 'KEEP';
   if (e.sales > 0 && e.roas !== null && e.roas >= brief.successMetrics.targetRoas) return 'SCALE';
-  if (e.leads === 0) return 'KILL';
+  // "No leads" is only evidence against a creative when leads that did arrive
+  // could be traced to one. With the round trip broken, an ad's leads land in
+  // the run total and nowhere else, and killing on zero here pauses a working
+  // creative for a tracking fault - the exact confusion the run-level rules
+  // are ordered to avoid.
+  if (e.leads === 0) return attributionIntact ? 'KILL' : 'KEEP';
   if (e.cplMinor !== null && e.cplMinor > brief.successMetrics.targetCplMinor * 2) return 'KILL';
   if (e.qualifiedLeads === 0 && e.connectedLeads >= 5) return 'ITERATE';
   return 'KEEP';

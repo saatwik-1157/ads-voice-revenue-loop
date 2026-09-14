@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 195 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 199 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -166,10 +166,12 @@ What that buys you, concretely:
 - **The stop-loss outranks every other signal.** Once net loss reaches it, the only recommendation
   is KILL, and it is flagged as needing a human.
 - **No calls outside the calling window**, none to a suppressed number, none past the daily ceiling,
-  and no more than `maxCallAttemptsPerLead` to the same person. That last one was declared here,
-  validated on load and printed by `guardrails` for a while before anything that places a call read
-  it — an unenforced version of a rule protecting a stranger's phone is worse than no rule, because
-  the config says they are covered.
+  and no more than `maxCallAttemptsPerLead` to the same person **per run, counted by phone number**.
+  That last one was declared here, validated on load and printed by `guardrails` for a while before
+  anything that places a call read it — an unenforced version of a rule protecting a stranger's phone
+  is worse than no rule, because the config says they are covered. Counting by phone rather than by
+  lead row matters for the same reason: the dedupe key includes the ad id, so one person answering
+  two ads becomes two lead rows and a per-row cap quietly allowed twice the calls it promised.
 - **Blocked niches are dropped before scoring**, so an off-limits market never reaches a human for
   approval. Special ad categories are declared `NONE` and blocked by default.
 - **A cap that is malformed is a cap that does not exist**, so the file is validated by type before
@@ -216,6 +218,7 @@ fault by generating more creative:
 | `stop_loss` | net loss hit the cap | KILL, hand to a human |
 | `no_delivery` / `no_leads` | spend but nothing arriving | ITERATE — check delivery, approval, tracking. **Explicitly not** "regenerate creative" |
 | `insufficient_data` | below the decision threshold | KEEP — the sample cannot support a verdict |
+| `attribution_gap` | half or more of the leads carry no ad id | ITERATE — fix the round trip; the per-ad numbers are a subset, not a split |
 | `calls_pending` | leads arrived, most not dialled yet | KEEP — deferral is not a fault; check the window, the daily ceiling, or a stopped dispatcher |
 | `low_connect_rate` | dialled leads do not answer | ITERATE — phone capture, calling delay, time of day |
 | `poor_qualification` | they answer but do not qualify | ITERATE — targeting or offer, not more spend |
@@ -238,6 +241,14 @@ reported a pipeline fault while the queue was simply waiting for 10:00. `low_con
 judged over the leads that actually have an outcome; the rest surface as `calls_pending`. The
 reported connect rate still measures leads reached against every lead paid for — that number should
 stay honest about leads you never got to.
+
+**A creative is not judged on leads that lost their ad id.** Attribution is what makes the per-ad
+split meaningful, and when it breaks it breaks quietly: a lead with no `ad_id` still counts in the
+run total and is invisible to every per-ad number, so an ad whose leads lost their attribution looks
+exactly like an ad with spend and no leads — which `judgeAd` kills. That pauses a working creative
+for a tracking fault. Per-ad judging now abstains from that verdict while any lead is unattributed,
+`economics` prints the count whenever it is non-zero, and half or more triggers `attribution_gap` at
+the run level. The invariant to watch: per-ad leads plus unattributed leads equal the run total.
 
 ### Scaling and the holdout
 
@@ -466,6 +477,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         195 tests, run by `npm test` and on every push
+tests/         199 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

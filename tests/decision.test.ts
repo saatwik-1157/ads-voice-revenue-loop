@@ -4,7 +4,7 @@ import { Store } from '../src/store/db.ts';
 import { defaultGuardrails } from '../src/config/guardrails.ts';
 import { generateBrief } from '../src/brief/generator.ts';
 import { evaluate, planScale } from '../src/economics/decision.ts';
-import { economicsForRun } from '../src/economics/metrics.ts';
+import { economicsForAd, economicsForRun } from '../src/economics/metrics.ts';
 import { intakeLead } from '../src/pipeline/intake.ts';
 import { handleCallWebhook } from '../src/pipeline/webhooks.ts';
 import { publishCampaign } from '../src/meta/publisher.ts';
@@ -297,5 +297,65 @@ test('a healthy funnel is not derailed by a tail of undialled leads', async () =
   const rec = evaluate(store, G, runId, brief);
   assert.notEqual(rec.signal, 'calls_pending', 'the dialled majority is judgeable');
   assert.notEqual(rec.signal, 'low_connect_rate', '16 of 16 dialled leads connected');
+  store.close();
+});
+
+/** A lead with no ad id: the round trip broke, or someone posted it by hand. */
+function addUnattributedLead(store: Store, runId: string, index: number, outcome: Record<string, unknown>): void {
+  const intake = intakeLead(store, G, runId, {
+    name: `Untracked ${index}`,
+    phone: `9${String(800000000 + index * 29)}`,
+    consent: true,
+    consentSource: 'meta_instant_form',
+  });
+  if (intake.status !== 'accepted') throw new Error(`lead ${index} rejected`);
+  handleCallWebhook(store, { call_id: `untracked_${index}`, lead_id: intake.lead.leadId, ...outcome });
+}
+
+test('an ad is not killed because attribution broke', async () => {
+  // Leads with no ad id count in the run total and are invisible to every
+  // per-ad view, so an ad whose leads lost their ad id looked like an ad with
+  // spend and no leads - and judgeAd kills those. That pauses a working
+  // creative for a tracking fault, which is the confusion the run-level rules
+  // are ordered specifically to avoid.
+  const { store, runId, brief } = await seed();
+  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 120000, impressions: 9000, clicks: 90, leads: 20, asOf: now() });
+  for (let i = 0; i < 4; i += 1) addLead(store, runId, i, { connected: true, qualified: true });
+  for (let i = 0; i < 16; i += 1) addUnattributedLead(store, runId, i, { connected: true, qualified: true });
+
+  const rec = evaluate(store, G, runId, brief);
+  assert.equal(rec.economics.unattributedLeads, 16);
+  assert.equal(rec.signal, 'attribution_gap');
+  assert.equal(rec.decision, 'ITERATE', 'a broken round trip is a plumbing fault, not a creative verdict');
+  assert.match(rec.action, /ad_id/);
+  store.close();
+});
+
+test('with attribution intact, an ad with spend and no leads is still killed', async () => {
+  // The caution above must not become a blanket excuse: when every lead that
+  // arrived carried an ad id, an ad with none really did fail.
+  const { store, runId, brief } = await seed();
+  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 120000, impressions: 9000, clicks: 90, leads: 20, asOf: now() });
+  for (let i = 0; i < 20; i += 1) addLead(store, runId, i, { connected: true, qualified: i < 12 });
+
+  const rec = evaluate(store, G, runId, brief);
+  assert.equal(rec.economics.unattributedLeads, 0, 'every lead is traceable');
+  assert.notEqual(rec.signal, 'attribution_gap');
+  store.close();
+});
+
+test('per-ad leads add up to the run total, or the difference is named', async () => {
+  // The invariant worth keeping: nothing disappears silently between the run
+  // view and the per-ad view.
+  const { store, runId } = await seed();
+  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 120000, impressions: 9000, clicks: 90, leads: 20, asOf: now() });
+  for (let i = 0; i < 6; i += 1) addLead(store, runId, i, { connected: true });
+  for (let i = 0; i < 3; i += 1) addUnattributedLead(store, runId, i, { connected: true });
+
+  const run = economicsForRun(store, runId);
+  const perAd = economicsForAd(store, runId, 'ad_1');
+  assert.equal(run.leads, 9);
+  assert.equal(perAd.leads, 6);
+  assert.equal(run.leads - perAd.leads, run.unattributedLeads, 'the gap is exactly what carries no ad id');
   store.close();
 });

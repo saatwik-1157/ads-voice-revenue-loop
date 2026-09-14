@@ -59,11 +59,15 @@ export async function dispatchLead(
   // `guardrails` - and read by nothing that places a call. It is the rule that
   // stops one person being dialled over and over, so an unenforced version was
   // worse than none: the control layer said they were protected.
-  const attempts = store.callCountForLead(lead.leadId);
+  // Counted per person, not per lead row. The dedupe key includes the ad id,
+  // so one person answering two ads becomes two leads - and a per-row cap then
+  // allows twice the calls it claims to. The rule is about the phone ringing.
+  const attempts = store.callCountForPhone(lead.runId, lead.phoneE164);
   if (attempts >= g.maxCallAttemptsPerLead) {
     store.setLeadCallStatus(lead.leadId, 'completed');
     store.audit(lead.runId, 'system', 'call.attempts_exhausted', {
       leadId: lead.leadId,
+      phone: maskPhone(lead.phoneE164),
       attempts,
       cap: g.maxCallAttemptsPerLead,
     });

@@ -174,6 +174,11 @@ export class Store {
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
+    // SQLite's default busy timeout is zero, so `serve` holding a write for a
+    // few milliseconds was enough to make a CLI command in another process
+    // fail outright with "database is locked". Waiting is the right answer:
+    // the other writer is about to finish.
+    this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec(SCHEMA);
   }
 
@@ -204,9 +209,12 @@ export class Store {
    * holdout blocked - is recorded here and nowhere else, so this is how an
    * operator tells "nothing is happening" from "a rule is firing".
    */
-  listAudit(runId: string, options: { kind?: string; actor?: string; limit?: number } = {}): AuditEvent[] {
-    const where = ['run_id = ?'];
-    const params: Array<string | number> = [runId];
+  listAudit(runId: string | null, options: { kind?: string; actor?: string; limit?: number } = {}): AuditEvent[] {
+    // `run_id = NULL` is never true in SQL, so events recorded without a run -
+    // the HTTP layer's refusals, anything system-wide - used to be written and
+    // then be unreadable by any query in the codebase. Pass null to read them.
+    const where = [runId === null ? 'run_id IS NULL' : 'run_id = ?'];
+    const params: Array<string | number> = runId === null ? [] : [runId];
     if (options.kind) {
       // A bare prefix like `call` matches call.deferred and call.outcome.
       where.push('(kind = ? OR kind LIKE ?)');
@@ -227,13 +235,14 @@ export class Store {
   }
 
   /** How many of each kind of thing happened, most frequent first. */
-  auditSummary(runId: string): Array<{ kind: string; actor: string; count: number; last: string }> {
+  auditSummary(runId: string | null): Array<{ kind: string; actor: string; count: number; last: string }> {
+    const scope = runId === null ? 'run_id IS NULL' : 'run_id = ?';
     return this.db
       .prepare(
         `SELECT kind, actor, COUNT(*) as count, MAX(at) as last
-         FROM audit WHERE run_id = ? GROUP BY kind, actor ORDER BY count DESC, kind`,
+         FROM audit WHERE ${scope} GROUP BY kind, actor ORDER BY count DESC, kind`,
       )
-      .all(runId) as never;
+      .all(...(runId === null ? [] : [runId])) as never;
   }
 
   auditTrail(runId: string): AuditEvent[] {
@@ -346,6 +355,14 @@ export class Store {
       )
       .run(status, approver, now(), approvalId);
     return Number(res.changes) > 0;
+  }
+
+  /** Which run an approval belongs to, so a decision on it is auditable there. */
+  approvalRun(approvalId: string): string | null {
+    const row = this.db.prepare('SELECT run_id as runId FROM approvals WHERE approval_id = ?').get(approvalId) as
+      | { runId: string }
+      | undefined;
+    return row?.runId ?? null;
   }
 
   pendingApprovals(runId: string): Array<{ approvalId: string; gate: string; subject: string; detail: string }> {

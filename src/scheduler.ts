@@ -4,7 +4,7 @@ import type { Decision } from './core/types.ts';
 import { syncInsights } from './meta/publisher.ts';
 import { evaluate } from './economics/decision.ts';
 import { applyRecommendation, describeOutcome, type ApplyOutcome } from './apply.ts';
-import { id } from './core/util.ts';
+import { DEFAULT_LEASE_MS, PROCESS_HOLDER, runLockName } from './store/lock.ts';
 import type { MockMetaProvider } from './meta/mock.ts';
 
 /**
@@ -39,8 +39,6 @@ export interface CycleResult {
   summary: string;
 }
 
-const PROCESS_HOLDER = `pid_${process.pid}_${id('h')}`;
-
 /**
  * Run one evaluation cycle for one run.
  *
@@ -52,10 +50,12 @@ const PROCESS_HOLDER = `pid_${process.pid}_${id('h')}`;
 export async function runCycle(ctx: Context, runId: string, options: CycleOptions = {}): Promise<CycleResult> {
   const at = options.now ?? new Date();
   const holder = options.holder ?? PROCESS_HOLDER;
-  const lease = options.leaseMs ?? 10 * 60_000;
-  const lockName = `cycle:${runId}`;
+  const lease = options.leaseMs ?? DEFAULT_LEASE_MS;
+  const lockName = runLockName(runId);
 
-  // Two cycles on one run would double-count a budget step and race on pauses.
+  // Two writers on one run would double-count a budget step and race on
+  // pauses. `apply` takes the same lock, so a hand-run one and a scheduled
+  // cycle queue behind each other instead of compounding.
   if (!ctx.store.acquireLock(lockName, holder, lease, at)) {
     return skip(runId, 'another cycle is already running for this run');
   }
@@ -85,7 +85,7 @@ export async function runCycle(ctx: Context, runId: string, options: CycleOption
     }
 
     const rec = evaluate(ctx.store, ctx.guardrails, runId, brief);
-    const outcome = await applyRecommendation(ctx, runId, brief, rec, { now: at, unattended: true });
+    const outcome = await applyRecommendation(ctx, runId, brief, rec, { now: at });
 
     const summary = `${rec.decision} (${rec.signal}) - ${describeOutcome(outcome, ctx.guardrails.currency)}`;
     ctx.store.audit(runId, 'agent', 'cycle.completed', {

@@ -356,3 +356,70 @@ test('with no manifest at all, library files are treated as cleared', async () =
   assert.equal(hasGeneratedArtwork({ ...brief, creatives: [{ ...brief.creatives[0]!, assetProvenance: 'library' }] }), false);
   store.close();
 });
+
+/** A structurally correct PNG header: real signature, real IHDR, chosen size. */
+function pngHeader(width: number, height: number): Buffer {
+  const b = Buffer.alloc(64);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8);
+  b.write('IHDR', 12, 'ascii');
+  b.writeUInt32BE(width, 16);
+  b.writeUInt32BE(height, 20);
+  return b;
+}
+
+test('a header is a claim, not a measurement', async () => {
+  // 64 bytes declaring 4294967295 square used to be believed: it cleared the
+  // minimum-size check by a wide margin and went on to be uploaded to Meta.
+  const dir = scratch();
+  writeFileSync(join(dir, 'art.png'), pngHeader(0xffffffff, 0xffffffff));
+  const { brief, store } = await seedBrief();
+  await assert.rejects(new LibraryAssetProvider({ dir }).produce(brief.creatives[0]!, brief), AssetError);
+  store.close();
+});
+
+test('a file that is not the image it claims to be is refused', async () => {
+  const { brief, store } = await seedBrief();
+  const cases: Array<[string, Buffer]> = [
+    ['plain text', Buffer.from('this is a note, not artwork\n')],
+    ['an empty file', Buffer.alloc(0)],
+    ['four bytes of a PNG signature', Buffer.from([0x89, 0x50, 0x4e, 0x47])],
+    ['a PNG signature with no IHDR', Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(56)])],
+    ['a JPEG with no start-of-frame', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0, 0, 0, 0, 0])],
+    ['a zero-sized PNG', pngHeader(0, 0)],
+  ];
+  for (const [label, bytes] of cases) {
+    const dir = scratch();
+    writeFileSync(join(dir, 'art.png'), bytes);
+    await assert.rejects(
+      new LibraryAssetProvider({ dir }).produce(brief.creatives[0]!, brief),
+      AssetError,
+      `${label} must not reach the ad account`,
+    );
+  }
+  store.close();
+});
+
+test('an oversized file is refused by its size on disk, before it is read', async () => {
+  const dir = scratch();
+  // maxBytes is set low rather than writing 50MB: the point is that the
+  // refusal comes from stat, not from having loaded the file to measure it.
+  writeFileSync(join(dir, 'art.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
+  const { brief, store } = await seedBrief();
+  await assert.rejects(
+    new LibraryAssetProvider({ dir, maxBytes: 1024 }).produce(brief.creatives[0]!, brief),
+    (err: Error) => err instanceof AssetError && /the limit is/.test(err.message),
+  );
+  store.close();
+});
+
+test('imageInfo bounds the dimensions it reports', () => {
+  assert.throws(() => imageInfo(pngHeader(0, 600)), AssetError);
+  assert.throws(() => imageInfo(pngHeader(600, 0)), AssetError);
+  assert.throws(() => imageInfo(pngHeader(50_000, 600)), AssetError);
+  assert.deepEqual(imageInfo(encodePng(800, 1000, new Uint8Array(800 * 1000 * 3))), {
+    format: 'png',
+    width: 800,
+    height: 1000,
+  });
+});

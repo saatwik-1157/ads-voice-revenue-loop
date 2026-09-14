@@ -6,7 +6,6 @@ import { fromMetaLeadgen, intakeLead } from '../pipeline/intake.ts';
 import type { RawLead } from '../pipeline/intake.ts';
 import { dispatchLead } from '../pipeline/dispatch.ts';
 import { handleCallWebhook, recordExternalRevenue, verifySignature, verifyToken } from '../pipeline/webhooks.ts';
-import type { RawCallResult } from '../pipeline/webhooks.ts';
 import { economicsForRun } from '../economics/metrics.ts';
 import { evaluate } from '../economics/decision.ts';
 import { maskPhone } from '../core/util.ts';
@@ -19,13 +18,60 @@ import type { MockVoiceProvider } from '../voice/mock.ts';
  * Both webhook routes verify an HMAC signature before doing anything, because
  * an unauthenticated request here can place phone calls and record revenue.
  */
+
+/**
+ * A request this server refuses, as opposed to one it failed to handle.
+ *
+ * The distinction is not cosmetic. Meta and OmniDimension both retry on 5xx,
+ * so answering a permanently malformed payload with 500 asks the sender to
+ * redeliver something that can never succeed - forever, on their schedule.
+ * Anything caused by the request gets a 4xx and stays delivered.
+ */
+export class HttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+  }
+}
+
 export function createHttpServer(ctx: Context) {
   return createServer((req, res) => {
     handle(ctx, req, res).catch((err: unknown) => {
+      if (err instanceof HttpError) {
+        ctx.store.audit(null, 'system', 'http.rejected', {
+          url: req.url,
+          status: err.status,
+          error: err.message,
+        });
+        json(res, err.status, { error: err.message });
+        return;
+      }
       ctx.store.audit(null, 'system', 'http.error', { url: req.url, error: (err as Error).message });
       json(res, 500, { error: 'internal error' });
     });
   });
+}
+
+/**
+ * Parse a request body, or refuse the request.
+ *
+ * Also rejects the JSON values that are legal but not objects - `null`, `42`,
+ * `[]` - because every route here goes on to read properties off the result,
+ * and `null.entry` is a 500 for what is really a bad request.
+ */
+function parseJson(body: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch (err) {
+    throw new HttpError(400, `body is not valid JSON: ${(err as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new HttpError(400, 'body must be a JSON object');
+  }
+  return parsed as Record<string, unknown>;
 }
 
 async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -58,11 +104,14 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
       json(res, 401, { error: 'bad signature' });
       return;
     }
-    const payload = JSON.parse(body) as MetaWebhookBody;
+    const payload = parseJson(body) as MetaWebhookBody;
     const results: unknown[] = [];
-    for (const entry of payload.entry ?? []) {
-      for (const change of entry.changes ?? []) {
-        if (change.field !== 'leadgen') continue;
+    // `entry` typed as anything but an array used to reach for..of and throw a
+    // TypeError, which came back as 500 - and 500 is what Meta retries on.
+    for (const entry of Array.isArray(payload.entry) ? payload.entry : []) {
+      const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+      for (const change of changes) {
+        if (change?.field !== 'leadgen' || !change.value || typeof change.value !== 'object') continue;
         results.push(await acceptLead(ctx, change.value));
       }
     }
@@ -85,7 +134,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
       json(res, 401, { error: 'bad signature or token' });
       return;
     }
-    const result = handleCallWebhook(ctx.store, JSON.parse(body) as RawCallResult);
+    const result = handleCallWebhook(ctx.store, parseJson(body));
     json(res, result.status === 'recorded' ? 200 : 202, result);
     return;
   }
@@ -98,7 +147,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
       return;
     }
     const body = await readBody(req);
-    const payload = JSON.parse(body) as { runId?: string } & Record<string, unknown>;
+    const payload = parseJson(body) as { runId?: string } & Record<string, unknown>;
     const runId = payload.runId ?? ctx.store.latestRun();
     if (!runId) {
       json(res, 400, { error: 'no run to attach this lead to' });
@@ -114,8 +163,22 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
       return;
     }
     const body = await readBody(req);
-    const payload = JSON.parse(body) as { leadId: string; amountMinor: number; source?: string };
-    const ok = recordExternalRevenue(ctx.store, payload.leadId, payload.amountMinor, payload.source ?? 'manual');
+    const payload = parseJson(body) as { leadId?: unknown; amountMinor?: unknown; source?: unknown };
+
+    // Revenue is the number every KEEP/KILL/SCALE decision is made from, so it
+    // is the worst field in the system to take on trust. This used to write
+    // whatever arrived: a string, a negative, 1e308. A poisoned figure here
+    // does not throw - it makes the engine scale a losing campaign.
+    const leadId = payload.leadId;
+    if (typeof leadId !== 'string' || !leadId) throw new HttpError(400, 'leadId must be a non-empty string');
+    const amountMinor = payload.amountMinor;
+    if (typeof amountMinor !== 'number' || !Number.isSafeInteger(amountMinor) || amountMinor < 0) {
+      throw new HttpError(400, `amountMinor must be a whole number of minor units, 0 or more, got ${JSON.stringify(amountMinor)}`);
+    }
+    const source = payload.source === undefined ? 'manual' : payload.source;
+    if (typeof source !== 'string') throw new HttpError(400, 'source must be a string');
+
+    const ok = recordExternalRevenue(ctx.store, leadId, amountMinor, source);
     json(res, ok ? 200 : 404, { ok });
     return;
   }
@@ -143,6 +206,9 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
 
   json(res, 404, { error: `no route for ${route}` });
 }
+
+/** Meta's leadgen payloads are small; anything near this is not one of them. */
+const MAX_BODY_BYTES = 1_000_000;
 
 interface MetaWebhookBody {
   entry?: Array<{ changes?: Array<{ field: string; value: Record<string, unknown> }> }>;
@@ -225,21 +291,45 @@ async function acceptLead(ctx: Context, value: Record<string, unknown>, explicit
   };
 }
 
+/**
+ * Read a request body, up to a limit, and answer even when it exceeds one.
+ *
+ * Killing the socket the moment the limit is passed looks tidy and is not: the
+ * sender is still uploading, so it never reads the response and sees only a
+ * reset connection - indistinguishable from this server falling over. So we
+ * stop buffering, keep draining what is already in flight so the reply can be
+ * read, and only cut the connection off if the sender keeps going well past
+ * the point of making a point.
+ */
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let overLimit = false;
+
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > 1_000_000) {
-        reject(new Error('request body too large'));
-        req.destroy();
+      if (size > MAX_BODY_BYTES) {
+        if (!overLimit) {
+          overLimit = true;
+          chunks.length = 0;
+          reject(new HttpError(413, `request body exceeds ${MAX_BODY_BYTES} bytes`));
+        }
+        // Past this much, the sender is not going to stop on its own.
+        if (size > MAX_BODY_BYTES * 10) req.destroy();
         return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+
+    req.on('end', () => {
+      if (!overLimit) resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    // A reset while we are already refusing the request is the expected
+    // ending, not a second failure to report.
+    req.on('error', (err) => {
+      if (!overLimit) reject(err);
+    });
   });
 }
 
@@ -248,11 +338,14 @@ function readBody(req: IncomingMessage): Promise<string> {
  * token fails closed: these routes can dial a stranger and move revenue.
  */
 function authorized(ctx: Context, req: IncomingMessage): boolean {
-  const expected = process.env.FL_ADMIN_TOKEN ?? '';
-  if (!expected) return false;
-  const provided = header(req, 'x-fl-admin-token');
+  const expected = Buffer.from(process.env.FL_ADMIN_TOKEN ?? '', 'utf8');
+  if (expected.length === 0) return false;
+  // Compare bytes, not UTF-16 units. `"probé".length` is 5 like `"probe"`, but
+  // the buffers differ in length and timingSafeEqual throws on that - turning
+  // a wrong token into a 500 instead of a refusal.
+  const provided = Buffer.from(header(req, 'x-fl-admin-token'), 'utf8');
   if (provided.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+  return timingSafeEqual(provided, expected);
 }
 
 function header(req: IncomingMessage, name: string): string {

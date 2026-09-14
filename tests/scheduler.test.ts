@@ -10,7 +10,9 @@ import { MockVoiceProvider } from '../src/voice/mock.ts';
 import { intakeLead } from '../src/pipeline/intake.ts';
 import { handleCallWebhook } from '../src/pipeline/webhooks.ts';
 import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler } from '../src/scheduler.ts';
-import { budgetRaiseTooSoon } from '../src/apply.ts';
+import { applyRecommendation, budgetRaiseTooSoon } from '../src/apply.ts';
+import { evaluate } from '../src/economics/decision.ts';
+import { runLockName, withRunLock } from '../src/store/lock.ts';
 import { now } from '../src/core/util.ts';
 import type { Context } from '../src/orchestrator.ts';
 import type { Brief } from '../src/core/types.ts';
@@ -263,6 +265,67 @@ test('the loop waits out the first interval unless told to start immediately', a
   });
   await handle.done;
   assert.ok(sleeps.length >= 1, 'slept before the first cycle');
+  ctx.store.close();
+});
+
+test('a person running apply cannot stack a raise on top of the scheduler', async () => {
+  const { ctx, runId } = await liveRun();
+  seedProfit(ctx, runId);
+
+  const cycle = await runCycle(ctx, runId, { sync: false });
+  assert.equal(cycle.outcome?.kind, 'budget_raised');
+  const afterCycle = ctx.store.getCampaign(runId)!.dailyBudgetMinor;
+
+  // The CLI path, seconds later. This used to raise again - each step legal on
+  // its own, 1.69x together, against a 1.3x cap and a 24h floor.
+  const brief = ctx.store.getBrief(runId)!;
+  const rec = evaluate(ctx.store, ctx.guardrails, runId, brief);
+  const outcome = await applyRecommendation(ctx, runId, brief, rec, {});
+
+  assert.equal(outcome.kind, 'budget_deferred');
+  assert.equal(ctx.store.getCampaign(runId)!.dailyBudgetMinor, afterCycle, 'the budget did not move');
+  assert.equal(ctx.store.listAudit(runId).filter((e) => e.kind === 'budget.raised').length, 1);
+  ctx.store.close();
+});
+
+test('forcing past the floor works, and leaves a name behind', async () => {
+  const { ctx, runId } = await liveRun();
+  seedProfit(ctx, runId);
+  await runCycle(ctx, runId, { sync: false });
+
+  const brief = ctx.store.getBrief(runId)!;
+  const rec = evaluate(ctx.store, ctx.guardrails, runId, brief);
+  const outcome = await applyRecommendation(ctx, runId, brief, rec, { force: true, forcedBy: 'ada' });
+
+  assert.equal(outcome.kind, 'budget_raised');
+  // Overriding a cap is not the same as the cap not applying: it stays findable.
+  const override = ctx.store.listAudit(runId).find((e) => e.kind === 'budget.floor_overridden');
+  assert.ok(override, 'the override is audited');
+  assert.equal((JSON.parse(override.detail) as { by: string }).by, 'ada');
+  ctx.store.close();
+});
+
+test('an apply is turned away while a cycle is acting on the same run', async () => {
+  const { ctx, runId } = await liveRun();
+
+  // Stand in for a `serve` loop mid-cycle in another process.
+  assert.ok(ctx.store.acquireLock(runLockName(runId), 'other_process', 60_000));
+
+  const ran = await withRunLock(ctx.store, runId, () => Promise.resolve('acted'));
+  assert.equal(ran, null, 'the second writer is refused rather than run');
+
+  ctx.store.releaseLock(runLockName(runId), 'other_process');
+  assert.equal(await withRunLock(ctx.store, runId, () => Promise.resolve('acted')), 'acted');
+  ctx.store.close();
+});
+
+test('the run lock is released even when the work throws', async () => {
+  const { ctx, runId } = await liveRun();
+  await assert.rejects(
+    withRunLock(ctx.store, runId, () => Promise.reject(new Error('provider down'))),
+    /provider down/,
+  );
+  assert.equal(await withRunLock(ctx.store, runId, () => Promise.resolve('free')), 'free');
   ctx.store.close();
 });
 

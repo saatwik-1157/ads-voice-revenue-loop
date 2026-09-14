@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 183 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 195 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -355,11 +355,27 @@ These are enforced in code, not just documented:
   calls and record revenue, so an unset secret fails closed. Meta is HMAC-only; the voice webhook
   prefers HMAC and accepts a static token for platforms that cannot sign a body, with the tradeoff
   documented rather than hidden.
-- **Claims are checked before a human is asked to approve them.** A brief containing "guaranteed",
-  "100%", "risk free" and friends is blocked at gate #1 rather than presented for sign-off, and the
-  voice script is checked for promise drift against the ad's own CTA.
+- **Claims are checked before a human is asked to approve them, and the check is enforced.** A brief
+  containing "guaranteed", "100%", "risk free" and friends is blocked at gate #1, `approve` refuses
+  to grant it, and `publish` re-checks the brief it is actually about to send — because an approval
+  is a decision about the brief as it stood then, and briefs can be edited afterwards. For a while
+  the detection was perfect and the enforcement was absent: the gate listed the problems, `approve`
+  ignored them, and copy promising "guaranteed results" went live under documentation saying that
+  was impossible.
+- **Everything a stranger can read or hear is claim-checked**, not a hand-picked list of fields. The
+  whole brief object is handed to the voice provider, so anything in it can be spoken;
+  `qualifyingQuestions` and `optOutLine` are both read aloud and neither used to be covered. The
+  checker now walks the brief and exempts only ids, formats and timestamps, so a new field is
+  checked by default rather than until someone remembers to add it.
 - **Consent, calling hours and opt-outs.** A lead with no recorded consent source is refused at
   intake. An opt-out on a call suppresses the number permanently and immediately.
+- **One person is one number.** Suppression is recorded against the normalized form, so a number that
+  normalizes two different ways is two people as far as the opt-out list is concerned. `+9876543210`
+  — a plus typed in front of a national number — used to be believed as an international number,
+  producing a different number that may belong to somebody else and that walked straight past that
+  person's opt-out. Ambiguous lengths, extensions (`9876543210 ext 22` became `+91987654321022`),
+  repeated digits and anything else that is not exactly one phone number are refused rather than
+  guessed at, which is what the function always claimed to do.
 - **Every refusal is legible, not just recorded.** `audit` shows what happened and which rules fired,
   counted by kind - so "leads arriving, no calls going out" resolves to `84 call.deferred` in one
   command rather than a guess. Phone numbers are masked in the output.
@@ -450,6 +466,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         183 tests, run by `npm test` and on every push
+tests/         195 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

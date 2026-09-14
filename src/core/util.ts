@@ -26,6 +26,12 @@ export class PhoneError extends Error {}
  * ambiguous is rejected rather than guessed, because a wrong number means an
  * unsolicited call to a stranger.
  */
+/** The national subscriber length this module assumes (IN, and most of its peers). */
+const NATIONAL_DIGITS = 10;
+
+/** Formatting a person or a form might introduce, and nothing else. */
+const SEPARATORS = /[\s\-().]/g;
+
 export function toE164(raw: string, defaultCountryCode: string): string {
   const trimmed = (raw ?? '').trim();
   if (!trimmed) throw new PhoneError('empty phone number');
@@ -33,31 +39,69 @@ export function toE164(raw: string, defaultCountryCode: string): string {
   const cc = defaultCountryCode.replace(/[^0-9]/g, '');
   if (!cc) throw new PhoneError('defaultCountryCode must contain digits, e.g. "91"');
 
-  if (trimmed.startsWith('+')) {
-    const digits = trimmed.slice(1).replace(/[^0-9]/g, '');
-    if (digits.length < 8 || digits.length > 15) {
-      throw new PhoneError(`implausible international number: ${raw}`);
-    }
-    return `+${digits}`;
+  // Strip only real formatting. Anything else left over - letters, "ext", a
+  // second number - means this field holds something other than one phone
+  // number, and stripping it silently used to turn "9876543210 ext 22" into
+  // +91987654321022: a different number, dialled at a stranger.
+  const cleaned = trimmed.replace(SEPARATORS, '');
+  const body = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
+  if (!/^[0-9]+$/.test(body)) {
+    throw new PhoneError(`"${raw}" is not a single phone number; remove extensions and any other text`);
   }
 
-  let digits = trimmed.replace(/[^0-9]/g, '');
-  // 00-prefixed international dialling
-  if (digits.startsWith('00')) {
-    digits = digits.slice(2);
-    if (digits.length < 8 || digits.length > 15) throw new PhoneError(`implausible number: ${raw}`);
-    return `+${digits}`;
+  if (cleaned.startsWith('+')) return international(body, cc, raw);
+  if (body.startsWith('00')) return international(body.slice(2), cc, raw);
+
+  // Already carries the country code.
+  if (body.startsWith(cc) && body.length === cc.length + NATIONAL_DIGITS) return plausible(body, raw);
+
+  // National, possibly behind a trunk prefix.
+  const national = body.replace(/^0+/, '');
+  if (national.length !== NATIONAL_DIGITS) {
+    throw new PhoneError(
+      `cannot normalize "${raw}" with country code +${cc}: expected ${NATIONAL_DIGITS} national digits, got ${national.length}`,
+    );
   }
-  // Already carries the country code
-  if (digits.startsWith(cc) && digits.length === cc.length + 10) {
-    return `+${digits}`;
+  return plausible(`${cc}${national}`, raw);
+}
+
+/**
+ * An explicitly international number.
+ *
+ * The length floor is the point. A "+" in front of a bare national number is a
+ * common way for a form to be filled in, and it used to be taken at face value:
+ * "+9876543210" became +9876543210 rather than +919876543210. That is a
+ * different number - possibly a real one belonging to somebody else - and it
+ * also walks straight past the suppression list, because an opt-out is recorded
+ * against the normalized form. Anything short enough to be a national number in
+ * disguise is refused rather than guessed at.
+ */
+function international(digits: string, cc: string, raw: string): string {
+  // Checked first so junk gets the accurate reason rather than "ambiguous".
+  if (digits.startsWith('0')) throw new PhoneError(`"${raw}" has no valid country code`);
+  if (digits.startsWith(cc)) {
+    if (digits.length !== cc.length + NATIONAL_DIGITS) {
+      throw new PhoneError(`"${raw}" is +${cc} but not ${NATIONAL_DIGITS} national digits long`);
+    }
+    return plausible(digits, raw);
   }
-  // National trunk prefix
-  if (digits.startsWith('0')) digits = digits.replace(/^0+/, '');
-  if (digits.length < 7 || digits.length > 12) {
-    throw new PhoneError(`cannot normalize "${raw}" with country code +${cc}`);
+  if (digits.length <= NATIONAL_DIGITS) {
+    throw new PhoneError(
+      `"${raw}" is ambiguous: ${digits.length} digits after "+" could be a national number with a stray plus. Store it in full E.164, e.g. +${cc}${'9'.repeat(NATIONAL_DIGITS)}`,
+    );
   }
-  return `+${cc}${digits}`;
+  if (digits.length > 15) throw new PhoneError(`implausible international number: ${raw}`);
+  return plausible(digits, raw);
+}
+
+/** A last look for the shapes that are digits but not numbers. */
+function plausible(digits: string, raw: string): string {
+  if (digits.startsWith('0')) throw new PhoneError(`"${raw}" starts with a zero country code`);
+  // The subscriber part, not the whole string: +919999999999 has two distinct
+  // digits overall and is still somebody filling in a form to get past it.
+  const subscriber = digits.slice(-NATIONAL_DIGITS);
+  if (new Set(subscriber).size === 1) throw new PhoneError(`"${raw}" is one repeated digit, not a number`);
+  return `+${digits}`;
 }
 
 export function minor(amount: number): number {

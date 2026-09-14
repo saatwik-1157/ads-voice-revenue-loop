@@ -1,6 +1,6 @@
 import type { Store } from '../store/db.ts';
 import type { Brief } from '../core/types.ts';
-import type { Guardrails } from '../config/guardrails.ts';
+import { GuardrailViolation, type Guardrails } from '../config/guardrails.ts';
 import { money } from '../core/util.ts';
 import { checkClaims, checkPromiseAlignment } from '../brief/claims.ts';
 import { hasGeneratedArtwork } from '../creative/pipeline.ts';
@@ -113,10 +113,36 @@ function describeArtwork(brief: Brief): string {
  * The record of who authorised the money existed and could not be read back.
  */
 export function approve(store: Store, approvalId: string, approver: string): boolean {
-  const runId = store.approvalRun(approvalId);
+  const approval = store.getApproval(approvalId);
+
+  // "The gate can be opened only after the brief is regenerated, not by
+  // approving past it" was the documented rule, and nothing implemented it.
+  // A brief promising "guaranteed results" was flagged here, approved, and
+  // published. Refusing at the gate is where the operator is standing; publish
+  // re-checks the brief itself, because an approval ages and a brief can change.
+  const blocking = blockingIssues(approval?.detail);
+  if (blocking.length) {
+    throw new GuardrailViolation(
+      'blocking_brief',
+      `approval ${approvalId} has ${blocking.length} blocking issue(s) and cannot be granted:\n  - ${blocking.join('\n  - ')}\nRegenerate the brief; this is not a judgement call.`,
+    );
+  }
+
   const ok = store.decideApproval(approvalId, 'approved', approver);
-  if (ok) store.audit(runId, 'human', 'approval.granted', { approvalId, approver });
+  if (ok) store.audit(approval?.runId ?? null, 'human', 'approval.granted', { approvalId, approver });
   return ok;
+}
+
+/** The blocking list recorded when the gate was opened, if it is still readable. */
+function blockingIssues(detail: string | null | undefined): string[] {
+  if (!detail) return [];
+  try {
+    const parsed = JSON.parse(detail) as { blocking?: unknown };
+    return Array.isArray(parsed.blocking) ? parsed.blocking.filter((b): b is string => typeof b === 'string') : [];
+  } catch {
+    // Unreadable detail must not read as "no problems found".
+    return ['approval detail could not be parsed, so its blocking issues cannot be confirmed'];
+  }
 }
 
 export function reject(store: Store, approvalId: string, approver: string, reason: string): boolean {

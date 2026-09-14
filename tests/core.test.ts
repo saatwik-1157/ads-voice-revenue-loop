@@ -20,10 +20,48 @@ test('toE164 normalizes the shapes a lead form actually produces', () => {
   assert.equal(toE164('0091 9876543210', '91'), '+919876543210');
 });
 
+test('toE164 normalizes every shape of the same number identically', () => {
+  // Suppression is recorded against the normalized form, so two spellings of
+  // one number that normalize differently are two people as far as the
+  // opt-out list is concerned.
+  const spellings = ['9876543210', '+919876543210', '919876543210', '09876543210', '0091 98765 43210', '+91 98765-43210', '(98765) 43210'];
+  for (const spelling of spellings) {
+    assert.equal(toE164(spelling, '91'), '+919876543210', `${spelling} is the same person`);
+  }
+});
+
 test('toE164 rejects rather than guesses', () => {
   assert.throws(() => toE164('', '91'), PhoneError);
   assert.throws(() => toE164('12345', '91'), PhoneError);
   assert.throws(() => toE164('+1', '91'), PhoneError);
+});
+
+test('a plus in front of a national number is refused, not believed', () => {
+  // "+9876543210" used to normalize to +9876543210 - a different number,
+  // possibly a real one belonging to someone else, and one that walks past a
+  // suppression entry recorded as +919876543210.
+  assert.throws(() => toE164('+9876543210', '91'), (err: Error) => /ambiguous/.test(err.message));
+  assert.notEqual(toE164('9876543210', '91'), '+9876543210');
+});
+
+test('a phone field holding more than a phone number is refused', () => {
+  // "9876543210 ext 22" used to become +91987654321022 by stripping the
+  // letters and keeping every digit: a wrong number, dialled at a stranger.
+  for (const raw of ['9876543210 ext 22', '9876543210x22', '98765ABCDE', '+', '9876543210 / 9876543211']) {
+    assert.throws(() => toE164(raw, '91'), PhoneError, `${raw} must not be guessed at`);
+  }
+});
+
+test('digits that are not a number are refused', () => {
+  for (const raw of ['0000000000', '+000000000000', '9999999999', '1111111111']) {
+    assert.throws(() => toE164(raw, '91'), PhoneError, `${raw} is not a phone number`);
+  }
+});
+
+test('a national number of the wrong length is refused rather than padded with a country code', () => {
+  for (const raw of ['1234567', '12345678', '123456789', '12345678901']) {
+    assert.throws(() => toE164(raw, '91'), PhoneError, `${raw} is not 10 national digits`);
+  }
 });
 
 test('maskPhone keeps only the last four digits', () => {

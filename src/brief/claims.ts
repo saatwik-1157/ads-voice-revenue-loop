@@ -14,33 +14,8 @@ export interface ClaimIssue {
  */
 export function checkClaims(brief: Brief, g: Guardrails): ClaimIssue[] {
   const issues: ClaimIssue[] = [];
-  const fields: Array<[string, string]> = [
-    ['offer.problem', brief.offer.problem],
-    ['offer.outcome', brief.offer.outcome],
-    ['offer.mechanism', brief.offer.mechanism],
-    ['offer.proof', brief.offer.proof],
-    ['offer.cta', brief.offer.cta],
-    ['offer.deliverable', brief.offer.deliverable],
-    ['leadFormCopy', brief.leadFormCopy],
-    ['callScript.opener', brief.callScript.opener],
-    ['callScript.conversionAsk', brief.callScript.conversionAsk],
-  ];
-
-  for (const c of brief.creatives) {
-    fields.push([`creative.${c.creativeId}.primaryText`, c.primaryText]);
-    fields.push([`creative.${c.creativeId}.headline`, c.headline]);
-    fields.push([`creative.${c.creativeId}.description`, c.description]);
-    fields.push([`creative.${c.creativeId}.hook`, c.hook]);
-  }
-  for (const [key, value] of Object.entries(brief.callScript.approvedAnswers)) {
-    fields.push([`callScript.approvedAnswers.${key}`, value]);
-  }
-  for (const [key, value] of Object.entries(brief.callScript.objectionHandling)) {
-    fields.push([`callScript.objectionHandling.${key}`, value]);
-  }
-
-  for (const [field, text] of fields) {
-    const lower = (text ?? '').toLowerCase();
+  for (const [field, text] of publicText(brief)) {
+    const lower = text.toLowerCase();
     for (const pattern of g.bannedClaimPatterns) {
       if (lower.includes(pattern.toLowerCase())) {
         issues.push({ field, text, pattern });
@@ -48,6 +23,44 @@ export function checkClaims(brief: Brief, g: Guardrails): ClaimIssue[] {
     }
   }
   return issues;
+}
+
+/**
+ * Structural fields - ids, formats, timestamps. Everything else in a brief is
+ * something a stranger can end up reading or hearing, so this list is the only
+ * exemption from claim checking and is deliberately short.
+ */
+const STRUCTURAL = new Set([
+  'briefId',
+  'createdAt',
+  'creativeId',
+  'assetRef',
+  'assetProvenance',
+  'format',
+  'source',
+  'currency',
+]);
+
+/**
+ * Every string in the brief that a member of the public could encounter.
+ *
+ * This used to be a hand-written list of nine fields plus the creatives, which
+ * was fail-open: a field added to the brief went unchecked until someone
+ * remembered to add it here. The whole brief object is handed to the voice
+ * provider, so anything in it can be spoken - and `callScript.optOutLine` and
+ * `callScript.qualifyingQuestions`, both read aloud, had been missed. A
+ * qualifying question could carry any claim it liked. Walking the object means
+ * a new field is checked by default and has to be declared structural to escape.
+ */
+function publicText(value: unknown, path = ''): Array<[string, string]> {
+  if (typeof value === 'string') return value.trim() ? [[path || 'brief', value]] : [];
+  if (Array.isArray(value)) return value.flatMap((item, i) => publicText(item, `${path}[${i}]`));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, child]) =>
+      STRUCTURAL.has(key) ? [] : publicText(child, path ? `${path}.${key}` : key),
+    );
+  }
+  return [];
 }
 
 /**

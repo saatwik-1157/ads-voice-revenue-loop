@@ -168,6 +168,18 @@ export function assertObjectiveAllowed(g: Guardrails, objective: string): void {
 }
 
 export function assertBudgetWithinCaps(g: Guardrails, dailyBudgetMinor: number, spentSoFarMinor: number): void {
+  // Every comparison against NaN is false, so an unchecked NaN passes each cap
+  // below and reaches Meta as `daily_budget: "NaN"`. A negative budget passes
+  // for the same reason. A cap that waves those through is not a cap.
+  if (!Number.isFinite(dailyBudgetMinor) || dailyBudgetMinor <= 0) {
+    throw new GuardrailViolation(
+      'daily_budget',
+      `daily budget must be a positive amount, got ${String(dailyBudgetMinor)} - check the --budget value`,
+    );
+  }
+  if (!Number.isFinite(spentSoFarMinor) || spentSoFarMinor < 0) {
+    throw new GuardrailViolation('spend_to_date', `spend to date is not a usable number: ${String(spentSoFarMinor)}`);
+  }
   if (dailyBudgetMinor > g.maxDailySpendMinor) {
     throw new GuardrailViolation('daily_cap', `daily budget ${dailyBudgetMinor} exceeds cap ${g.maxDailySpendMinor}`);
   }

@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 137 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 138 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Credentials
@@ -407,6 +407,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         137 tests, run by `npm test` and on every push
+tests/         138 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

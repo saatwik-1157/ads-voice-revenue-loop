@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # The unit tests cover the pieces; the demo is what catches a loop that
+      # no longer joins up. It has caught two integration breaks that every
+      # unit test happily passed through.
+      - name: End-to-end demo
+        run: node src/cli.ts demo
+        env:
+          FL_DB_PATH: ':memory:'
+
+      - name: Working tree is clean
+        run: |
+          # The demo must not leave artefacts behind that would be committed.
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The run dirtied the working tree:"
+            git status --porcelain
+            exit 1
+          fi

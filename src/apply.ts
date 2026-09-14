@@ -141,6 +141,9 @@ export async function pauseKilledAds(
     }
     await ctx.meta.setStatus(ad.adId, 'PAUSED');
     ctx.store.setAdStatus(ad.adId, 'PAUSED');
+    // Pausing an ad is a real change to the ad account. Auditing only the
+    // refusal to pause left the action itself invisible.
+    ctx.store.audit(runId, 'agent', 'ad.paused', { adId: ad.adId, rationale: ad.rationale });
     paused += 1;
   }
   return paused;

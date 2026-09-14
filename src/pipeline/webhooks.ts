@@ -66,6 +66,15 @@ export function handleCallWebhook(store: Store, raw: RawCallResult): WebhookResu
     // appointment is a forecast, and forecasts must not move ROAS.
     if (outcome.saleStatus === 'won' && outcome.expectedValueMinor > 0) {
       store.recordRevenue(leadId, outcome.expectedValueMinor, 'voice_agent');
+      // Money moving is the single most important thing that happens here, so
+      // it gets its own entry rather than being implied by the call outcome.
+      store.audit(lead.runId, 'voice', 'revenue.recorded', {
+        leadId,
+        amountMinor: outcome.expectedValueMinor,
+        source: 'voice_agent',
+        adId: lead.adId,
+        creativeId: lead.creativeId,
+      });
     }
     store.audit(lead.runId, 'voice', 'call.outcome', {
       leadId,

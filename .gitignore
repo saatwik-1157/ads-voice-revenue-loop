@@ -1,6 +1,8 @@
 node_modules/
-data/*.db
-data/*.db-*
+# Everything under data/ is runtime state: the database, simulated ad-account
+# state, generated previews. The Store creates the directory on demand, so
+# nothing in here needs to be tracked - and enumerating the files meant
+# mock-meta.json slipped through.
+data/
 .env
 *.log
-data/previews/

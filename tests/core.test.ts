@@ -73,3 +73,19 @@ test('a placeholder key counts as no key at all', () => {
   }
   assert.equal(isRealKey('sk-ant-api03-abcdefghijklmnop'), true);
 });
+
+test('the budget cap rejects the values that slip past a naive comparison', () => {
+  const g = defaultGuardrails;
+  // Every comparison against NaN is false, so an unchecked NaN passes both
+  // caps and reaches Meta as `daily_budget: "NaN"`. A negative budget passes
+  // the same way. A cap that accepts these is not bounding anything.
+  assert.throws(() => assertBudgetWithinCaps(g, Number.NaN, 0), /daily_budget/);
+  assert.throws(() => assertBudgetWithinCaps(g, -5000, 0), /daily_budget/);
+  assert.throws(() => assertBudgetWithinCaps(g, 0, 0), /daily_budget/, 'a campaign that cannot deliver is not a campaign');
+  assert.throws(() => assertBudgetWithinCaps(g, Number.POSITIVE_INFINITY, 0), GuardrailViolation);
+  assert.throws(() => assertBudgetWithinCaps(g, 1000, Number.NaN), /spend_to_date/);
+  assert.throws(() => assertBudgetWithinCaps(g, 1000, -1), /spend_to_date/);
+
+  assert.doesNotThrow(() => assertBudgetWithinCaps(g, 1000, 0), 'an ordinary budget still passes');
+  assert.doesNotThrow(() => assertBudgetWithinCaps(g, g.maxDailySpendMinor, 0), 'exactly at the cap is allowed');
+});

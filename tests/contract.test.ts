@@ -36,7 +36,7 @@ async function theBrief(): Promise<Brief> {
 }
 
 function respond(status: number, body: unknown): typeof fetch {
-  return (async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })) as never;
+  return (async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }));
 }
 
 function finding(result: { findings: Array<{ check: string; status: string; detail: string; fix?: string }> }, check: string) {
@@ -58,24 +58,24 @@ test('a dry run sends nothing and still reports what it can check', async () => 
 });
 
 test('the dry run surfaces configuration that would break the loop later', async () => {
-  const blind = { ...ENV, omni: { ...ENV.omni, webhookSecret: '', webhookToken: '' } } as Env;
+  const blind = { ...ENV, omni: { ...ENV.omni, webhookSecret: '', webhookToken: '' } };
   const result = await probeDispatchContract({ env: blind }, LEAD, await theBrief());
 
   const inbound = finding(result, 'inbound auth');
   assert.equal(inbound?.status, 'fail');
-  assert.match(inbound!.detail, /401/, 'says what will actually go wrong, not just that a var is unset');
+  assert.match(inbound.detail, /401/, 'says what will actually go wrong, not just that a var is unset');
   assert.equal(result.passed, false);
 });
 
 test('a token-only setup passes but is flagged as the weaker choice', async () => {
-  const tokenOnly = { ...ENV, omni: { ...ENV.omni, webhookSecret: '', webhookToken: 'tok' } } as Env;
+  const tokenOnly = { ...ENV, omni: { ...ENV.omni, webhookSecret: '', webhookToken: 'tok' } };
   const result = await probeDispatchContract({ env: tokenOnly }, LEAD, await theBrief());
   assert.equal(finding(result, 'inbound auth')?.status, 'warn');
   assert.equal(result.passed, true);
 });
 
 test('a localhost callback is a warning, because a provider cannot reach it', async () => {
-  const local = { ...ENV, publicBaseUrl: 'http://localhost:8787' } as Env;
+  const local = { ...ENV, publicBaseUrl: 'http://localhost:8787' };
   const result = await probeDispatchContract({ env: local }, LEAD, await theBrief());
   assert.equal(finding(result, 'webhook url')?.status, 'warn');
 });
@@ -94,7 +94,7 @@ test('the request carries the identifiers the outcome has to come back with', as
 test('each failure mode names the thing to change', () => {
   const notFound = diagnose({ status: 404, text: 'no route' }, 'https://api.test/calls/dispatch');
   assert.equal(notFound[0]?.status, 'fail');
-  assert.match(notFound[0]!.fix!, /OMNI_BASE_URL|dispatchCall/);
+  assert.match(notFound[0].fix!, /OMNI_BASE_URL|dispatchCall/);
 
   const unauthorized = diagnose({ status: 401, text: 'bad key' }, 'https://api.test/x');
   assert.equal(unauthorized.find((f) => f.check === 'endpoint')?.status, 'pass', 'a 401 proves the path exists');
@@ -172,7 +172,7 @@ test('an unreachable host fails on the endpoint rather than throwing at the call
       to: '+919876543210',
       fetchImpl: (async () => {
         throw new TypeError('getaddrinfo ENOTFOUND');
-      }) as never,
+      }),
     },
     LEAD,
     await theBrief(),

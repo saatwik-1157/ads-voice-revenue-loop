@@ -139,6 +139,6 @@ test('apply refuses to pause an ad the scale plan is holding open, and says so i
 
   const refusal = store.auditTrail(runId).find((e) => e.kind === 'ad.pause_refused');
   assert.ok(refusal, 'the refusal has to be auditable');
-  assert.match(refusal!.detail, /reserved/);
+  assert.match(refusal.detail, /reserved/);
   store.close();
 });

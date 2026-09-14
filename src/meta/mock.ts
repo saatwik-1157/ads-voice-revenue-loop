@@ -58,7 +58,7 @@ export class MockMetaProvider implements MetaProvider {
     return `${prefix}${String(120000000000000 + this.#state.seq)}`;
   }
 
-  async createCampaign(input: { name: string }): Promise<{ campaignId: string }> {
+  async createCampaign(_input: { name: string }): Promise<{ campaignId: string }> {
     const campaignId = this.#id('cmp_');
     this.#save();
     return { campaignId };
@@ -71,7 +71,7 @@ export class MockMetaProvider implements MetaProvider {
     return { adsetId };
   }
 
-  async createAdCreative(input: { variant: CreativeVariant }): Promise<{ creativeId: string }> {
+  async createAdCreative(_input: { variant: CreativeVariant }): Promise<{ creativeId: string }> {
     const creativeId = this.#id('crt_');
     this.#save();
     return { creativeId };

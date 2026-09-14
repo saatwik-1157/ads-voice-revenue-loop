@@ -245,10 +245,10 @@ export class MetaApiProvider implements MetaProvider {
     // Needs the leads_retrieval permission on a Page access token.
     const res = (await this.#get(leadgenId, {
       fields: 'id,created_time,field_data,ad_id,adset_id,campaign_id,form_id',
-    })) as Record<string, unknown>;
+    }));
 
     return {
-      leadgenId: String(res.id ?? leadgenId),
+      leadgenId: typeof res.id === 'string' ? res.id : leadgenId,
       fieldData: (res.field_data as Array<{ name: string; values: string[] }> | undefined) ?? [],
       adId: (res.ad_id as string | undefined) ?? null,
       adsetId: (res.adset_id as string | undefined) ?? null,

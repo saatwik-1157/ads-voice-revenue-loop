@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Bitmap, encodePng, rgb, wrapText } from '../src/creative/png.ts';
 import { AssetError, imageInfo, REEL_SIZE } from '../src/creative/provider.ts';
 import { RenderedAssetProvider } from '../src/creative/rendered.ts';
-import { LibraryAssetProvider } from '../src/creative/library.ts';
+import { GENERATED_MANIFEST, LibraryAssetProvider } from '../src/creative/library.ts';
 import { ensureCreativeAssets, hasGeneratedArtwork, missingAssets } from '../src/creative/pipeline.ts';
 import { MockMetaProvider } from '../src/meta/mock.ts';
 import { Store } from '../src/store/db.ts';
@@ -313,4 +313,46 @@ test('the brief model defaults to Sonnet, and a blank override does not win', ()
   assert.equal(resolveBriefModel('claude-opus-5'), 'claude-opus-5');
   assert.equal(resolveBriefModel('  claude-haiku-4-5  '), 'claude-haiku-4-5');
   assert.equal(DEFAULT_MODEL, 'claude-sonnet-5');
+});
+
+test('moving a file into the library cannot launder machine art into cleared art', async () => {
+  // `library` provenance means a person put the file there and vouched for it,
+  // which is why gate #1 stops warning. A generator that writes into assets/
+  // records what it wrote, and those files keep reporting as machine-made.
+  const dir = scratch();
+  writeFileSync(join(dir, 'speed-01.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
+  writeFileSync(join(dir, 'cleared-by-a-human.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
+  writeFileSync(join(dir, GENERATED_MANIFEST), JSON.stringify({ generated: ['speed-01.png'] }));
+
+  const { brief, store } = await seedBrief();
+  const library = new LibraryAssetProvider({ dir });
+
+  const speed = brief.creatives.find((c) => c.angle === 'Speed')!;
+  assert.equal((await library.produce(speed, brief)).provenance, 'rendered', 'listed in the manifest');
+
+  const other = brief.creatives.find((c) => c.angle !== 'Speed')!;
+  assert.equal((await library.produce(other, brief)).provenance, 'library', 'not listed, so a person vouched');
+  store.close();
+});
+
+test('an unreadable manifest fails safe rather than upgrading everything to cleared', async () => {
+  const dir = scratch();
+  writeFileSync(join(dir, 'art.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
+  writeFileSync(join(dir, GENERATED_MANIFEST), 'not json at all');
+
+  const { brief, store } = await seedBrief();
+  const asset = await new LibraryAssetProvider({ dir }).produce(brief.creatives[0]!, brief);
+  assert.equal(asset.provenance, 'rendered', 'a manifest we cannot read means we cannot vouch');
+  store.close();
+});
+
+test('with no manifest at all, library files are treated as cleared', async () => {
+  const dir = scratch();
+  writeFileSync(join(dir, 'art.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
+
+  const { brief, store } = await seedBrief();
+  const asset = await new LibraryAssetProvider({ dir }).produce(brief.creatives[0]!, brief);
+  assert.equal(asset.provenance, 'library');
+  assert.equal(hasGeneratedArtwork({ ...brief, creatives: [{ ...brief.creatives[0]!, assetProvenance: 'library' }] }), false);
+  store.close();
 });

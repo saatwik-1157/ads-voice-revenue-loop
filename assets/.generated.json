@@ -1,0 +1,13 @@
+{
+  "note": "Machine-generated placeholder artwork. Nobody has cleared these for use against a real budget.",
+  "generatedAt": "2026-09-14T17:32:31.791Z",
+  "generatedBy": "scripts/generate-placeholder-assets.ts",
+  "generated": [
+    "speed-01.png",
+    "speed-02.png",
+    "cost-certainty-01.png",
+    "cost-certainty-02.png",
+    "risk-of-delay-01.png",
+    "risk-of-delay-02.png"
+  ]
+}

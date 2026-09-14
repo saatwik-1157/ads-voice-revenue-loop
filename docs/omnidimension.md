@@ -102,7 +102,38 @@ stranger twice in a minute is worse than not calling them.
 
 ## 4. Adapt the dispatch call
 
-This is the part most likely to be wrong. Everything lives in one method — `dispatchCall` in
+This is the part most likely to be wrong, so there is a command that finds out for you instead of
+making you read two things side by side:
+
+```bash
+node src/cli.ts contract-test                 # dry run - nothing leaves the machine
+```
+
+It prints the exact request this repo would send — paste that into the provider's API console to
+compare shapes — and checks the configuration that breaks the loop *later* rather than now: an unset
+webhook secret means every call outcome 401s, and a `localhost` callback means none of them arrive at
+all.
+
+When you are ready to send one, with your own number:
+
+```bash
+node src/cli.ts contract-test --live --to +919876543210 --yes --idempotency
+```
+
+Three explicit signals, because success is a real phone ringing. Each check names the file to change
+when it fails:
+
+```
+  PASS  endpoint       the path exists and the key was accepted
+  FAIL  request shape  422 - the body was rejected: {"error":"to_number is required"}
+        fix: the body object literal in src/voice/omnidimension.ts -> dispatchCall
+```
+
+`--idempotency` sends the same dispatch twice and compares the returned call ids. That is the check
+worth running before any real traffic: [§3](#3-what-we-send-on-dispatch) explains why the retry logic
+is only safe if the key is honoured, and this is how you find out rather than assume.
+
+Everything the probe reports maps to one of these five places — all in one method, `dispatchCall` in
 [`src/voice/omnidimension.ts`](../src/voice/omnidimension.ts):
 
 | If their API differs in… | Change |

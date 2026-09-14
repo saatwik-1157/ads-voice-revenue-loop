@@ -55,7 +55,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
-npm test                      # 101 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 113 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Credentials
@@ -99,6 +99,7 @@ node src/cli.ts cycle [runId]                       # one unattended cycle: sync
 node src/cli.ts schedule --every 6h                 # the cycle on a loop
 node src/cli.ts cycles [runId]                      # what the loop has been doing
 node src/cli.ts serve --schedule --every 6h         # webhook middleware + the loop
+node src/cli.ts contract-test                       # probe the voice API before trusting it
 ```
 
 Money is passed to the CLI in major units (`--budget 700` = ₹700/day) and stored in minor units
@@ -358,6 +359,9 @@ which half is our contract (the post-call webhook) and which half is a guess at 
   multi-touch model.
 - **The AI writes; it does not decide.** Claude drafts the brief and its output is re-validated
   locally. Every spend, publish and dial decision is made by the rules in this repo.
+- **The voice dispatch shape is a guess at someone else's API.** `contract-test` exists to settle it
+  against real credentials in one run rather than by reading — including whether the idempotency key
+  is honoured, which is what the retry logic's safety rests on.
 - **The model path is wired but unexercised.** Everything shown and tested here ran through the
   deterministic writer; `draftBrief` has never been run against a live API key. The request shape is
   type-checked against the SDK and the local re-validation applies either way, but treat the first

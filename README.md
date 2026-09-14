@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 133 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 137 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Credentials
@@ -96,6 +96,7 @@ node src/cli.ts sync <runId>                        # pull Meta insights
 node src/cli.ts economics <runId>                   # the funnel numbers on their own
 node src/cli.ts review <runId>                      # phase G: economics + decision
 node src/cli.ts audit [runId] [--kind call]         # what happened, and which rules fired
+node src/cli.ts reset --yes                         # throw away local state between demos
 node src/cli.ts apply <runId>                       # act on it, inside the caps
 node src/cli.ts cycle [runId]                       # one unattended cycle: sync + review + apply
 node src/cli.ts schedule --every 6h                 # the cycle on a loop
@@ -406,6 +407,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         133 tests, run by `npm test` and on every push
+tests/         137 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

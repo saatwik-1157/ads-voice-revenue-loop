@@ -243,6 +243,8 @@ name the exact ad that produced the sale.
 | Symptom | Cause |
 |---|---|
 | `401 bad signature or token` | Neither `OMNI_WEBHOOK_SECRET` nor `OMNI_WEBHOOK_TOKEN` set, or the HMAC is over a re-serialized body rather than the raw bytes |
+| `400 body is not valid JSON` | The body did not parse, or parsed to something that is not an object. Deliberately a 4xx — see below |
+| `413 request body exceeds 1000000 bytes` | A post-call result should be a few hundred bytes. Something is attaching a transcript or a recording; send a URL instead |
 | `payload carried no lead_id` | The call context did not survive the round trip — see §3 |
 | `unknown lead <id>` | The outcome arrived for a lead this instance has never seen (wrong database, or a test payload) |
 | `dispatch response carried no call id` | Their response field is not `requestId`/`call_id`/`id` — see §4 |
@@ -250,6 +252,13 @@ name the exact ad that produced the sale.
 | Revenue stays zero despite sales | `sale_status` is `pending`, not `won` — by design |
 | `deferred` on every dispatch | Outside `callWindow`, or `maxCallsPerDay` is reached |
 | Everything connects, nothing qualifies | Usually real. `poor_qualification` means targeting or offer, not the agent |
+
+**Why a malformed body is a 400 and not a 500.** Retrying is the correct response to *our* failure
+and the wrong response to yours. A payload that can never parse will never parse on the tenth
+attempt either, so answering it with a 5xx signs this endpoint up to receive it forever, on your
+retry schedule. Anything caused by the request comes back 4xx and stays delivered; 5xx is reserved
+for this server genuinely falling over, which is the only case where retrying helps. Refused requests
+are recorded — `node src/cli.ts audit --system` lists them with the status and the reason.
 
 ---
 

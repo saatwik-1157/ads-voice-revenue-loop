@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 138 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 178 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -96,8 +96,10 @@ node src/cli.ts sync <runId>                        # pull Meta insights
 node src/cli.ts economics <runId>                   # the funnel numbers on their own
 node src/cli.ts review <runId>                      # phase G: economics + decision
 node src/cli.ts audit [runId] [--kind call]         # what happened, and which rules fired
+node src/cli.ts audit --system                      # events belonging to no run (refused requests)
 node src/cli.ts reset --yes                         # throw away local state between demos
 node src/cli.ts apply <runId>                       # act on it, inside the caps
+node src/cli.ts apply <runId> --force --by "Nitesh" # ...and past the inter-raise floor, on the record
 node src/cli.ts cycle [runId]                       # one unattended cycle: sync + review + apply
 node src/cli.ts schedule --every 6h                 # the cycle on a loop
 node src/cli.ts cycles [runId]                      # what the loop has been doing
@@ -166,6 +168,13 @@ What that buys you, concretely:
 - **No calls outside the calling window**, none to a suppressed number, none past the daily ceiling.
 - **Blocked niches are dropped before scoring**, so an off-limits market never reaches a human for
   approval. Special ad categories are declared `NONE` and blocked by default.
+- **A cap that is malformed is a cap that does not exist**, so the file is validated by type before
+  it is validated by range. `"maxDailySpendMinor": "1,000"` parses to NaN, every comparison against
+  NaN is false, and that limit silently stops applying — checking ranges alone let it through.
+  `specialAdCategoriesAllowed: "false"` is a truthy string. A mistyped `timeZone` shifts the hours
+  real people get called in, so it is checked against the runtime's own zone list. Every problem in
+  the file is reported at once, nothing runs until it is fixed, and deleting the file falls back to
+  the built-in defaults rather than to no limits.
 
 ### Niche exclusions
 
@@ -288,13 +297,19 @@ Four things make it safe to leave running:
 - **Budget steps are rate-limited, not just size-limited.** `maxBudgetStepFactor` caps one decision.
   Left at that, a 6-hourly loop would compound 1.3× four times a day — **2.86×** — while every
   individual step still looked compliant. `minHoursBetweenBudgetRaises` is the floor that stops it,
-  and it is enforced only for unattended runs; a person typing `apply` has already decided to act.
+  and it applies to people too. It used to be skipped whenever a person ran `apply`, on the reasoning
+  that someone at a terminal has already decided to act — which put a scheduled cycle and a hand-run
+  `apply` seconds apart at **1.69×**, both raises individually legal. The operator decides to raise
+  once; they cannot see that the scheduler raised ninety seconds ago. Overriding the floor is
+  `apply --force --by "your name"`, and the override is audited as `budget.floor_overridden`.
 - **One pending gate #2, not one per cycle.** A decision waiting on a person is signal; a hundred
   copies of it is noise that buries the first one. If a request is already pending, the cycle reports
   that it is waiting and files nothing.
-- **A leased lock per run.** Two overlapping cycles would double-count a budget step and race on
-  pauses. The lease matters as much as the lock: a cycle killed mid-run releases it automatically
-  rather than wedging the loop forever.
+- **A leased lock per run, taken by both writers.** Two overlapping cycles would double-count a budget
+  step and race on pauses — and so would a cycle overlapping a hand-run `apply`, which is how the
+  1.69× above happened. Both go through `withRunLock`; whichever arrives second is turned away and
+  told why, rather than acting. The lease matters as much as the lock: a cycle killed mid-run releases
+  it automatically rather than wedging the loop forever.
 - **Failures are recorded, not thrown.** A provider outage ends that cycle with `error` in the
   `cycles` table and an audit event; the loop keeps its schedule. There is no catch-up burst either —
   if the process was down for a day, the right move is one cycle now, not twenty-four against stale
@@ -333,7 +348,16 @@ These are enforced in code, not just documented:
 - **Secrets never leave the server.** Tokens are read from env, redacted from logs, and never
   embedded in creative or sent to a browser.
 - **Revenue means revenue.** An expected value on a *pending* appointment is a forecast and does not
-  move ROAS. Only `sale_status: "won"` (or an external payment event via `POST /revenue`) counts.
+  move ROAS. Only `sale_status: "won"` (or an external payment event via `POST /revenue`) counts, and
+  the amount has to be a whole, non-negative number of minor units before it reaches the ledger. It
+  is the figure every KEEP/KILL/SCALE decision is made from, so a poisoned one does not throw — it
+  quietly scales a campaign that is losing money.
+- **A refusal is not a crash, and a crash is not a refusal.** A guardrail stopping a publish, a
+  malformed config, an unusable image, a database another process is mid-write on — these are the
+  system working, and they print what happened and what to do about it. Stack traces are reserved
+  for genuine defects, where the machinery is exactly what you need to see. The same distinction
+  runs through the HTTP layer: 4xx for anything the request got wrong, 5xx only for this server
+  failing, because 5xx is what Meta and OmniDimension retry on.
 
 ## Going live
 
@@ -393,6 +417,7 @@ src/
   core/        types, ids, phone normalization, redaction, retry/backoff
   store/       SQLite: runs, briefs, approvals, campaigns, leads, calls, revenue,
                spend, suppression, cycles, locks, audit, idempotency
+               lock.ts: one writer per run, shared by the scheduler and `apply`
   brief/       niche scoring, offer + creative + script, claim checking, Claude adapter
   meta/        provider interface, Marketing API client, mock delivery, publisher
   voice/       provider interface, OmniDimension client, mock agent, contract probe
@@ -407,6 +432,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         138 tests, run by `npm test` and on every push
+tests/         178 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { COMMANDS, findCommand, usageText } from '../src/cli/registry.ts';
 import { flagIsSet, minorFromFlag, parseArgs, parseFlags } from '../src/cli/args.ts';
 import { indent, safeParse } from '../src/cli/io.ts';
+import { Store } from '../src/store/db.ts';
 
 test('help lists every command, because it is generated from the registry', () => {
   // The hand-written help had already drifted once: `economics` existed for
@@ -94,4 +95,37 @@ test('output helpers behave', () => {
   assert.equal(indent('a', 2), '  a');
   assert.deepEqual(safeParse('{"a":1}'), { a: 1 });
   assert.equal(safeParse('not json'), null, 'a hand-edited row must not throw');
+});
+
+test('the audit trail can be filtered by kind, by family, and by actor', () => {
+  const store = new Store(':memory:');
+  const runId = store.createRun('test');
+  store.audit(runId, 'meta', 'lead.accepted', { leadId: 'a' });
+  store.audit(runId, 'system', 'call.deferred', { leadId: 'a', window: '10-19' });
+  store.audit(runId, 'system', 'call.suppressed', { leadId: 'b' });
+  store.audit(runId, 'agent', 'campaign.created', { campaignId: 'c1' });
+  store.audit('other_run', 'agent', 'campaign.created', { campaignId: 'c2' });
+
+  assert.equal(store.listAudit(runId).length, 4, 'other runs are not mixed in');
+  assert.equal(store.listAudit(runId, { kind: 'call.deferred' }).length, 1, 'an exact kind');
+  assert.equal(store.listAudit(runId, { kind: 'call' }).length, 2, 'a bare prefix matches the family');
+  assert.equal(store.listAudit(runId, { actor: 'system' }).length, 2);
+  assert.equal(store.listAudit(runId, { limit: 1 }).length, 1);
+  store.close();
+});
+
+test('the summary counts what happened, so a firing rule is visible at a glance', () => {
+  const store = new Store(':memory:');
+  const runId = store.createRun('test');
+  for (let i = 0; i < 84; i += 1) store.audit(runId, 'system', 'call.deferred', { leadId: `l${i}` });
+  store.audit(runId, 'agent', 'campaign.created', {});
+
+  const summary = store.auditSummary(runId);
+  // Most frequent first: 84 deferrals is the answer to "why no calls?", and it
+  // should not be buried under a chronological stream.
+  assert.equal(summary[0]?.kind, 'call.deferred');
+  assert.equal(summary[0]?.count, 84);
+  assert.equal(summary[0]?.actor, 'system');
+  assert.ok(summary[0]?.last);
+  store.close();
 });

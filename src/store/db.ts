@@ -188,6 +188,45 @@ export class Store {
       .run(id('evt'), runId, now(), actor, kind, typeof detail === 'string' ? detail : JSON.stringify(detail));
   }
 
+  /**
+   * A filtered slice of the audit trail, newest first.
+   *
+   * Every guardrail refusal - a deferred call, a rejected lead, a pause the
+   * holdout blocked - is recorded here and nowhere else, so this is how an
+   * operator tells "nothing is happening" from "a rule is firing".
+   */
+  listAudit(runId: string, options: { kind?: string; actor?: string; limit?: number } = {}): AuditEvent[] {
+    const where = ['run_id = ?'];
+    const params: Array<string | number> = [runId];
+    if (options.kind) {
+      // A bare prefix like `call` matches call.deferred and call.outcome.
+      where.push('(kind = ? OR kind LIKE ?)');
+      params.push(options.kind, `${options.kind}.%`);
+    }
+    if (options.actor) {
+      where.push('actor = ?');
+      params.push(options.actor);
+    }
+    params.push(options.limit ?? 50);
+
+    return this.db
+      .prepare(
+        `SELECT event_id as eventId, run_id as runId, at, actor, kind, detail
+         FROM audit WHERE ${where.join(' AND ')} ORDER BY at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(...params) as unknown as AuditEvent[];
+  }
+
+  /** How many of each kind of thing happened, most frequent first. */
+  auditSummary(runId: string): Array<{ kind: string; actor: string; count: number; last: string }> {
+    return this.db
+      .prepare(
+        `SELECT kind, actor, COUNT(*) as count, MAX(at) as last
+         FROM audit WHERE run_id = ? GROUP BY kind, actor ORDER BY count DESC, kind`,
+      )
+      .all(runId) as never;
+  }
+
   auditTrail(runId: string): AuditEvent[] {
     return this.db
       .prepare(

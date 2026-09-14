@@ -128,7 +128,7 @@ test('a real leadgen webhook carries no answers, so the lead is retrieved from M
   assert.equal(result?.status, 'accepted', `expected acceptance, got ${JSON.stringify(result)}`);
   assert.equal(h.ctx.store.countLeads(h.runId), 1);
 
-  const lead = h.ctx.store.pendingLeads(h.runId)[0] ?? h.ctx.store.getLead(String(result!.leadId))!;
+  const lead = h.ctx.store.pendingLeads(h.runId)[0] ?? h.ctx.store.getLead(String(result.leadId))!;
   assert.equal(lead.name, 'Asha R');
   assert.equal(lead.phoneE164, '+919876543210');
   assert.equal(lead.adId, 'ad_1', 'the ad id survives so the call can be attributed');

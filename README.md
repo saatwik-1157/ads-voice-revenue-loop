@@ -55,6 +55,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 ```bash
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
+npm run lint                  # eslint, type-aware
 npm test                      # 113 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
@@ -101,6 +102,8 @@ node src/cli.ts cycles [runId]                      # what the loop has been doi
 node src/cli.ts serve --schedule --every 6h         # webhook middleware + the loop
 node src/cli.ts contract-test                       # probe the voice API before trusting it
 ```
+
+`npm run ci` runs lint, typecheck and tests together - the same three things CI runs on every push.
 
 Money is passed to the CLI in major units (`--budget 700` = ₹700/day) and stored in minor units
 everywhere internally, so there is no floating-point drift in the economics.

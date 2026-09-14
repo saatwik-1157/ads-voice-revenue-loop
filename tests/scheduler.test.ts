@@ -197,7 +197,7 @@ test('budgetRaiseTooSoon measures from the last raise, and a zero floor disables
   assert.ok(budgetRaiseTooSoon(ctx, runId, new Date()));
   assert.equal(budgetRaiseTooSoon(ctx, runId, new Date(Date.now() + 25 * 3_600_000)), null);
 
-  const relaxed = { ...ctx, guardrails: { ...ctx.guardrails, minHoursBetweenBudgetRaises: 0 } } as Context;
+  const relaxed = { ...ctx, guardrails: { ...ctx.guardrails, minHoursBetweenBudgetRaises: 0 } };
   assert.equal(budgetRaiseTooSoon(relaxed, runId, new Date()), null, 'a zero floor opts out');
   ctx.store.close();
 });

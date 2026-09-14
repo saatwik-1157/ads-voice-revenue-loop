@@ -253,8 +253,8 @@ test('previews are written where a human can look at them before approving', asy
   });
   for (const outcome of outcomes) {
     assert.ok(outcome.previewPath, 'each creative has a preview');
-    assert.ok(existsSync(outcome.previewPath!));
-    assert.deepEqual(imageInfo(readFileSync(outcome.previewPath!)), { format: 'png', width: 1080, height: 1920 });
+    assert.ok(existsSync(outcome.previewPath));
+    assert.deepEqual(imageInfo(readFileSync(outcome.previewPath)), { format: 'png', width: 1080, height: 1920 });
   }
   store.close();
 });

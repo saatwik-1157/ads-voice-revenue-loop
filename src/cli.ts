@@ -9,7 +9,7 @@ import { economicsForRun } from './economics/metrics.ts';
 import { formatBrief, formatEconomics, formatRecommendation } from './report.ts';
 import { runDemo } from './demo/e2e.ts';
 import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler, type CycleResult } from './scheduler.ts';
-import { ensureCreativeAssets, hasGeneratedArtwork, missingAssets } from './creative/pipeline.ts';
+import { ensureCreativeAssets, missingAssets } from './creative/pipeline.ts';
 import { money } from './core/util.ts';
 import { applyRecommendation, describeOutcome } from './apply.ts';
 import { probeDispatchContract } from './voice/contract.ts';
@@ -130,7 +130,9 @@ async function main(argv: string[]): Promise<number> {
         for (const p of pending) {
           process.stdout.write(`${p.approvalId}  [${p.gate}]  ${p.subject}\n`);
           const detail = safeParse(p.detail);
-          if (detail?.summary) process.stdout.write(`${indent(String(detail.summary))}\n`);
+          // The summary is JSON we wrote ourselves, but this reads it back off
+          // disk - a hand-edited row should not print "[object Object]".
+          if (typeof detail?.summary === 'string') process.stdout.write(`${indent(detail.summary)}\n`);
         }
         return 0;
       }

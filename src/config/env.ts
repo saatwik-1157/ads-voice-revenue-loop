@@ -51,10 +51,11 @@ export interface Env {
 }
 
 export function env(): Env {
-  const mode = (process.env.FL_MODE ?? 'mock') as Mode;
-  if (mode !== 'mock' && mode !== 'live') {
-    throw new Error(`FL_MODE must be "mock" or "live", got "${mode}"`);
+  const rawMode = process.env.FL_MODE ?? 'mock';
+  if (rawMode !== 'mock' && rawMode !== 'live') {
+    throw new Error(`FL_MODE must be "mock" or "live", got "${rawMode}"`);
   }
+  const mode: Mode = rawMode;
   return {
     mode,
     port: Number(process.env.PORT ?? 8787),

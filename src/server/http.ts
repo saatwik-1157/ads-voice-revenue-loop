@@ -3,8 +3,10 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Context } from '../orchestrator.ts';
 import { voiceWebhookUrl } from '../orchestrator.ts';
 import { fromMetaLeadgen, intakeLead } from '../pipeline/intake.ts';
+import type { RawLead } from '../pipeline/intake.ts';
 import { dispatchLead } from '../pipeline/dispatch.ts';
 import { handleCallWebhook, recordExternalRevenue, verifySignature, verifyToken } from '../pipeline/webhooks.ts';
+import type { RawCallResult } from '../pipeline/webhooks.ts';
 import { economicsForRun } from '../economics/metrics.ts';
 import { evaluate } from '../economics/decision.ts';
 import { maskPhone } from '../core/util.ts';
@@ -83,7 +85,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
       json(res, 401, { error: 'bad signature or token' });
       return;
     }
-    const result = handleCallWebhook(ctx.store, JSON.parse(body));
+    const result = handleCallWebhook(ctx.store, JSON.parse(body) as RawCallResult);
     json(res, result.status === 'recorded' ? 200 : 202, result);
     return;
   }
@@ -165,7 +167,7 @@ async function acceptLead(ctx: Context, value: Record<string, unknown>, explicit
         ad_id: retrieved.adId ?? value.ad_id,
         adset_id: retrieved.adsetId ?? value.adgroup_id,
         campaign_id: retrieved.campaignId,
-      } as Record<string, unknown>;
+      };
     } catch (err) {
       ctx.store.audit(runId, 'meta', 'lead.retrieval_failed', {
         leadgenId: value.leadgen_id,
@@ -175,7 +177,7 @@ async function acceptLead(ctx: Context, value: Record<string, unknown>, explicit
     }
   }
 
-  const raw = source.field_data ? fromMetaLeadgen(source as never) : (source as never);
+  const raw = source.field_data ? fromMetaLeadgen(source) : (source as RawLead);
   const intake = intakeLead(ctx.store, ctx.guardrails, runId, raw);
   if (intake.status !== 'accepted') return intake;
 

@@ -4,6 +4,7 @@ import { lifecycleCommands } from './commands/lifecycle.ts';
 import { approvalCommands } from './commands/approvals.ts';
 import { campaignCommands } from './commands/campaign.ts';
 import { reviewCommands } from './commands/review.ts';
+import { auditCommands } from './commands/audit.ts';
 import { automationCommands } from './commands/automation.ts';
 import { toolCommands } from './commands/tools.ts';
 
@@ -33,6 +34,7 @@ export const COMMANDS: Command[] = [
   ...approvalCommands,
   ...campaignCommands,
   ...reviewCommands,
+  ...auditCommands,
   ...automationCommands,
 ];
 

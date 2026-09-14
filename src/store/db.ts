@@ -177,9 +177,18 @@ export class Store {
     this.db.exec(SCHEMA);
   }
 
+  /**
+   * Idempotent: a command that closes the store itself is then closed again by
+   * the CLI's finally block, and releasing a handle twice should be a no-op
+   * rather than a crash on the way out.
+   */
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
     this.db.close();
   }
+
+  #closed = false;
 
   // --- audit -------------------------------------------------------------
   audit(runId: string | null, actor: AuditEvent['actor'], kind: string, detail: unknown): void {

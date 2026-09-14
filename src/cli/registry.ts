@@ -5,6 +5,7 @@ import { approvalCommands } from './commands/approvals.ts';
 import { campaignCommands } from './commands/campaign.ts';
 import { reviewCommands } from './commands/review.ts';
 import { auditCommands } from './commands/audit.ts';
+import { resetCommands } from './commands/reset.ts';
 import { automationCommands } from './commands/automation.ts';
 import { toolCommands } from './commands/tools.ts';
 
@@ -36,6 +37,7 @@ export const COMMANDS: Command[] = [
   ...reviewCommands,
   ...auditCommands,
   ...automationCommands,
+  ...resetCommands,
 ];
 
 export function findCommand(name: string): Command | undefined {

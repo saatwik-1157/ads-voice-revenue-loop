@@ -129,3 +129,17 @@ test('the summary counts what happened, so a firing rule is visible at a glance'
   assert.ok(summary[0]?.last);
   store.close();
 });
+
+test('closing the store twice is a no-op, not a crash', () => {
+  // `reset` deletes the database, so it closes the store itself - and the CLI's
+  // finally block then closes it again on the way out.
+  const store = new Store(':memory:');
+  store.close();
+  assert.doesNotThrow(() => store.close());
+});
+
+test('reset refuses in live mode, where the database is the only record', () => {
+  const reset = findCommand('reset');
+  assert.ok(reset, 'reset is registered');
+  assert.match(reset.usage, /--yes/, 'it cannot be fired without saying so');
+});

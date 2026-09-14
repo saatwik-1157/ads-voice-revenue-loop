@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { AdInsight, MetaProvider, RetrievedLead } from './provider.ts';
+import type { AccountSummary, AdInsight, MetaProvider, RetrievedLead } from './provider.ts';
 import type { CreativeVariant } from '../core/types.ts';
 
 interface MockState {
@@ -26,14 +26,16 @@ export class MockMetaProvider implements MetaProvider {
   readonly kind = 'mock' as const;
   #state: MockState;
   #path: string | null;
+  readonly #currency: string;
 
   /**
    * `statePath` persists simulated delivery between processes, so a multi-step
    * CLI walkthrough (publish -> sync -> review) behaves like a real ad account
    * that keeps running while you are not looking at it.
    */
-  constructor(seed = 42, statePath: string | null = null) {
+  constructor(seed = 42, statePath: string | null = null, currency = 'INR') {
     this.#path = statePath;
+    this.#currency = currency;
     this.#state = (statePath && existsSync(statePath)
       ? (JSON.parse(readFileSync(statePath, 'utf8')) as MockState)
       : { seq: 0, prng: seed >>> 0, ads: {}, adsets: {}, acc: {}, images: {}, leads: {} });
@@ -161,6 +163,23 @@ export class MockMetaProvider implements MetaProvider {
   seedLead(lead: RetrievedLead): void {
     this.#state.leads[lead.leadgenId] = lead;
     this.#save();
+  }
+
+  /**
+   * A simulated account, in whatever currency it is asked to be.
+   *
+   * Defaults to the guardrails' currency so the mock never trips the mismatch
+   * check; construct it with another to exercise that path.
+   */
+  async accountSummary(): Promise<AccountSummary> {
+    return {
+      accountId: 'act_mock',
+      name: 'Mock Ad Account',
+      currency: this.#currency,
+      status: 1,
+      timezone: 'Asia/Kolkata',
+      disableReason: 0,
+    };
   }
 
   async insights(adIds: string[]): Promise<AdInsight[]> {

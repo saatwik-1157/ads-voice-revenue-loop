@@ -1,4 +1,4 @@
-import type { AdInsight, MetaProvider, RetrievedLead } from './provider.ts';
+import type { AccountSummary, AdInsight, MetaProvider, RetrievedLead } from './provider.ts';
 import { MetaApiError } from './provider.ts';
 import type { CreativeVariant } from '../core/types.ts';
 import { redact } from '../core/util.ts';
@@ -255,6 +255,26 @@ export class MetaApiProvider implements MetaProvider {
       campaignId: (res.campaign_id as string | undefined) ?? null,
       formId: (res.form_id as string | undefined) ?? null,
       createdTime: (res.created_time as string | undefined) ?? null,
+    };
+  }
+
+  async accountSummary(): Promise<AccountSummary> {
+    const res = await this.#get(this.#accountId, {
+      fields: 'name,currency,account_status,timezone_name,disable_reason',
+    });
+    const currency = typeof res.currency === 'string' ? res.currency : '';
+    if (!currency) {
+      // Without it there is no way to know what unit a budget is in, and
+      // guessing is how a 1,000 rupee cap becomes a 1,000 dollar campaign.
+      throw new MetaApiError(0, `ad account ${this.#accountId} reported no currency; budgets cannot be verified against it`);
+    }
+    return {
+      accountId: this.#accountId,
+      name: (res.name as string | undefined) ?? null,
+      currency,
+      status: typeof res.account_status === 'number' ? res.account_status : null,
+      timezone: (res.timezone_name as string | undefined) ?? null,
+      disableReason: typeof res.disable_reason === 'number' ? res.disable_reason : null,
     };
   }
 

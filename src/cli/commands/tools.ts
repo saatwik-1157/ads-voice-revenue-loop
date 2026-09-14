@@ -3,6 +3,7 @@ import { flagIsSet } from '../args.ts';
 import { fail, write } from '../io.ts';
 import { runDemo } from '../../demo/e2e.ts';
 import { probeDispatchContract } from '../../voice/contract.ts';
+import { preflight } from '../../meta/preflight.ts';
 import { generateBrief } from '../../brief/generator.ts';
 import { id, now } from '../../core/util.ts';
 import type { Lead } from '../../core/types.ts';
@@ -91,6 +92,40 @@ export const toolCommands: Command[] = [
 
       const failures = result.findings.filter((f) => f.status === 'fail').length;
       write(failures ? `\n${failures} check(s) failed - see docs/omnidimension.md` : '\nno failures');
+      return failures ? 1 : 0;
+    },
+  },
+
+  {
+    name: 'preflight',
+    usage: '[--lead-form ID]',
+    summary: 'Read-only checks against the real ad account, before any spend',
+    run: async (ctx, args) => {
+      // Every call this makes is a GET. It creates nothing and spends nothing,
+      // which is what makes it safe as the first thing you run with a new token.
+      if (ctx.env.mode !== 'live') {
+        write('FL_MODE is not live, so there are no real credentials to check here.');
+        write('Set FL_MODE=live with your Meta credentials in .env, then run this before publishing.\n');
+      }
+
+      const result = await preflight({
+        env: ctx.env,
+        guardrails: ctx.guardrails,
+        leadFormId: args.flags['lead-form'] ?? null,
+      });
+
+      const mark = { pass: 'PASS', fail: 'FAIL', warn: 'WARN', skipped: 'skip' };
+      for (const finding of result.findings) {
+        write(`  ${mark[finding.status].padEnd(5)} ${finding.check.padEnd(22)} ${finding.detail}`);
+        if (finding.fix) write(`        ${' '.repeat(22)} fix: ${finding.fix}`);
+      }
+
+      const failures = result.findings.filter((f) => f.status === 'fail').length;
+      write(
+        failures
+          ? `\n${failures} check(s) failed. Nothing was created and nothing was spent.`
+          : '\nno failures. Nothing was created and nothing was spent.',
+      );
       return failures ? 1 : 0;
     },
   },

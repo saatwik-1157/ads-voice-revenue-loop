@@ -72,6 +72,28 @@ export async function publishCampaign(
     );
   }
 
+  // Budgets are sent to Meta as an integer of the *ad account's* minor units,
+  // while every cap here is written in the guardrails' currency. Nothing used
+  // to check they agreed, and the failure is silent and expensive: guardrails
+  // in INR against a USD account send "100000" for a 1,000 rupee cap and get a
+  // 1,000 dollar campaign - roughly 85x - with the stop-loss, the CPL target
+  // and every other limit denominated wrong at the same time.
+  const account = await provider.accountSummary();
+  if (account.currency.toUpperCase() !== g.currency.toUpperCase()) {
+    throw new GuardrailViolation(
+      'currency_mismatch',
+      `ad account ${account.accountId} bills in ${account.currency}, the control layer is written in ${g.currency}. ` +
+        `Every budget would be sent as ${account.currency} minor units while being checked as ${g.currency}. ` +
+        `Set "currency" in config/guardrails.json to ${account.currency} and restate the caps in it, or use an ad account that bills in ${g.currency}.`,
+    );
+  }
+  if (account.status !== null && account.status !== 1) {
+    throw new GuardrailViolation(
+      'account_not_active',
+      `ad account ${account.accountId} has account_status ${account.status} (1 is active)${account.disableReason ? `, disable_reason ${account.disableReason}` : ''}; it cannot run ads`,
+    );
+  }
+
   const objective = g.allowedObjectives[0]!;
   assertObjectiveAllowed(g, objective);
   assertGeoAllowed(g, g.allowedGeos);

@@ -24,6 +24,12 @@ export async function dispatchLead(
   brief: Brief,
   webhookUrl: string,
   extraMetadata: Record<string, string> = {},
+  /**
+   * When this call is considered to be happening. Defaults to now; the demo
+   * passes a simulated time because it simulates days elapsing, and judging a
+   * simulated call against the real wall clock is a category error.
+   */
+  at: Date = new Date(),
 ): Promise<DispatchResult> {
   if (store.isSuppressed(lead.phoneE164)) {
     store.setLeadCallStatus(lead.leadId, 'suppressed');
@@ -34,7 +40,7 @@ export async function dispatchLead(
     store.setLeadCallStatus(lead.leadId, 'suppressed');
     return { status: 'suppressed', leadId: lead.leadId, reason: 'no consent on record' };
   }
-  if (!isWithinCallWindow(g)) {
+  if (!isWithinCallWindow(g, at)) {
     store.audit(lead.runId, 'system', 'call.deferred', {
       leadId: lead.leadId,
       window: `${g.callWindow.startHour}-${g.callWindow.endHour} ${g.callWindow.timeZone}`,

@@ -190,4 +190,19 @@ export function isWithinCallWindow(g: Guardrails, at: Date = new Date()): boolea
   return hour >= g.callWindow.startHour && hour < g.callWindow.endHour;
 }
 
+/**
+ * The next moment inside the calling window, searched hour by hour from `from`.
+ *
+ * The demo needs this because it simulates days passing: a simulated call has
+ * to be judged against a simulated time, or running the demo after dinner
+ * silently skips the entire voice half of the loop and the run looks broken.
+ */
+export function nextTimeInsideCallWindow(g: Guardrails, from: Date = new Date()): Date {
+  for (let hours = 0; hours < 24; hours += 1) {
+    const candidate = new Date(from.getTime() + hours * 3_600_000);
+    if (isWithinCallWindow(g, candidate)) return candidate;
+  }
+  return from;
+}
+
 export { DEFAULTS as defaultGuardrails };

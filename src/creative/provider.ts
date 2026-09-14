@@ -47,8 +47,15 @@ export const REEL_SIZE = { width: 1080, height: 1920 } as const;
  * way to find out, and a mislabelled file is rejected before it is ever sent.
  */
 export function imageInfo(bytes: Buffer): { format: 'png' | 'jpeg'; width: number; height: number } {
-  if (bytes.length > 24 && bytes[0] === 0x89 && bytes.toString('ascii', 1, 4) === 'PNG') {
-    return { format: 'png', width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+  if (bytes.length > 24 && PNG_SIGNATURE.equals(bytes.subarray(0, 8)) && bytes.toString('ascii', 12, 16) === 'IHDR') {
+    // The header is a claim, not a measurement. A 64-byte file declaring
+    // 4294967295 square used to be believed, pass the minimum-size check, and
+    // go to Meta - so the numbers are bounded before they are returned.
+    return {
+      format: 'png',
+      width: dimension('width', bytes.readUInt32BE(16)),
+      height: dimension('height', bytes.readUInt32BE(20)),
+    };
   }
   if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
     // Walk the JPEG segments to the start-of-frame, which carries the size.
@@ -62,11 +69,27 @@ export function imageInfo(bytes: Buffer): { format: 'png' | 'jpeg'; width: numbe
       const length = bytes.readUInt16BE(offset + 2);
       // SOF0-SOF15, excluding the non-frame markers DHT/JPG/DAC.
       if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-        return { format: 'jpeg', height: bytes.readUInt16BE(offset + 5), width: bytes.readUInt16BE(offset + 7) };
+        return {
+          format: 'jpeg',
+          height: dimension('height', bytes.readUInt16BE(offset + 5)),
+          width: dimension('width', bytes.readUInt16BE(offset + 7)),
+        };
       }
       offset += 2 + length;
     }
     throw new AssetError('JPEG carried no start-of-frame segment; the file is truncated or not a JPEG');
   }
   throw new AssetError('unrecognised image; Meta ad images must be PNG or JPEG');
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** Larger than any ad image and far short of anything a decoder would attempt. */
+const MAX_DIMENSION = 20_000;
+
+function dimension(axis: 'width' | 'height', value: number): number {
+  if (value < 1 || value > MAX_DIMENSION) {
+    throw new AssetError(`image header declares a ${axis} of ${value}px; that file is corrupt or not an image`);
+  }
+  return value;
 }

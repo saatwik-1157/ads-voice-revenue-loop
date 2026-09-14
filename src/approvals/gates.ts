@@ -105,15 +105,24 @@ function describeArtwork(brief: Brief): string {
   return [...counts].map(([key, count]) => `${count} ${key}`).join(', ');
 }
 
+/**
+ * Who decided, recorded against the run they decided about.
+ *
+ * These two rows are the entire point of having human gates, and they were
+ * being written with a null run id - which `WHERE run_id = ?` can never match.
+ * The record of who authorised the money existed and could not be read back.
+ */
 export function approve(store: Store, approvalId: string, approver: string): boolean {
+  const runId = store.approvalRun(approvalId);
   const ok = store.decideApproval(approvalId, 'approved', approver);
-  if (ok) store.audit(null, 'human', 'approval.granted', { approvalId, approver });
+  if (ok) store.audit(runId, 'human', 'approval.granted', { approvalId, approver });
   return ok;
 }
 
 export function reject(store: Store, approvalId: string, approver: string, reason: string): boolean {
+  const runId = store.approvalRun(approvalId);
   const ok = store.decideApproval(approvalId, 'rejected', approver);
-  if (ok) store.audit(null, 'human', 'approval.rejected', { approvalId, approver, reason });
+  if (ok) store.audit(runId, 'human', 'approval.rejected', { approvalId, approver, reason });
   return ok;
 }
 

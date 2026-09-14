@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/store/db.ts';
 import { defaultGuardrails } from '../src/config/guardrails.ts';
 import { generateBrief } from '../src/brief/generator.ts';
-import { approve, requestGate1 } from '../src/approvals/gates.ts';
+import { approve, reject, requestGate1 } from '../src/approvals/gates.ts';
 import { publishCampaign, syncInsights } from '../src/meta/publisher.ts';
 import { ensureCreativeAssets } from '../src/creative/pipeline.ts';
 import { RenderedAssetProvider } from '../src/creative/rendered.ts';
@@ -175,5 +175,47 @@ test('a refusal is audited as loudly as an action', async () => {
   const kinds = new Set(store.auditTrail(runId).map((e) => e.kind));
   assert.ok(kinds.has('lead.rejected'), 'a refused lead is recorded');
   assert.ok(kinds.has('call.deferred'), 'a call the window blocked is recorded');
+  store.close();
+});
+
+test('who approved the spend is recorded against the run they approved it for', async () => {
+  // This was written with a null run id, and `WHERE run_id = ?` never matches
+  // NULL - so the record of who authorised the money was unreadable by every
+  // query in the codebase. It is the entire point of having a human gate.
+  const store = new Store(':memory:');
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+
+  const granted = requestGate1(store, G, runId, brief, 50000);
+  approve(store, granted.approvalId, 'ada');
+  const refused = requestGate1(store, G, runId, brief, 50000);
+  reject(store, refused.approvalId, 'grace', 'claims are too strong');
+
+  const events = store.listAudit(runId, { actor: 'human' });
+  const names = events.map((e) => e.kind);
+  assert.ok(names.includes('approval.granted'), 'an approval is findable on its run');
+  assert.ok(names.includes('approval.rejected'), 'so is a refusal');
+
+  const detail = JSON.parse(events.find((e) => e.kind === 'approval.granted')!.detail) as { approver: string };
+  assert.equal(detail.approver, 'ada', 'and it says who');
+  store.close();
+});
+
+test('events belonging to no run can still be read back', async () => {
+  const store = new Store(':memory:');
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.audit(null, 'system', 'http.rejected', { status: 400 });
+  store.audit(runId, 'system', 'cycle.completed', {});
+
+  const system = store.listAudit(null);
+  assert.equal(system.length, 1, 'null means "events belonging to no run", not "no filter"');
+  assert.equal(system[0]?.kind, 'http.rejected');
+  assert.deepEqual(
+    store.auditSummary(null).map((r) => r.kind),
+    ['http.rejected'],
+    'and the summary scopes the same way',
+  );
   store.close();
 });

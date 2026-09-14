@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, extname, join, resolve } from 'node:path';
 import type { Brief, CreativeVariant } from '../core/types.ts';
 import type { CreativeAssetProvider, ProducedAsset } from './provider.ts';
@@ -54,11 +54,16 @@ export class LibraryAssetProvider implements CreativeAssetProvider {
 
     const chosen = this.#pick(files, variant, brief);
     const path = join(this.#dir, chosen);
-    const bytes = readFileSync(path);
 
-    if (bytes.length > this.#maxBytes) {
-      throw new AssetError(`${chosen} is ${(bytes.length / 1e6).toFixed(1)}MB; the limit is ${(this.#maxBytes / 1e6).toFixed(0)}MB`);
+    // Ask the size before reading. The check used to sit after readFileSync,
+    // so the way this found out a file was too big was to hold all of it in
+    // memory first - a 50MB drop-in cost 50MB to refuse.
+    const size = statSync(path).size;
+    if (size > this.#maxBytes) {
+      throw new AssetError(`${chosen} is ${(size / 1e6).toFixed(1)}MB; the limit is ${(this.#maxBytes / 1e6).toFixed(0)}MB`);
     }
+
+    const bytes = readFileSync(path);
     const info = imageInfo(bytes);
     if (info.width < this.#minWidth || info.height < this.#minHeight) {
       throw new AssetError(

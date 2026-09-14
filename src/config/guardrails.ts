@@ -92,34 +92,139 @@ const DEFAULTS: Guardrails = {
   holdoutBudgetShare: 0.2,
 };
 
+export class GuardrailConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GuardrailConfigError';
+  }
+}
+
 export function loadGuardrails(path = 'config/guardrails.json'): Guardrails {
   const full = resolve(process.cwd(), path);
   if (!existsSync(full)) return DEFAULTS;
-  const parsed = JSON.parse(readFileSync(full, 'utf8')) as Partial<Guardrails>;
+
+  let parsed: Partial<Guardrails>;
+  try {
+    parsed = JSON.parse(readFileSync(full, 'utf8')) as Partial<Guardrails>;
+  } catch (err) {
+    // The control layer is hand-edited; a trailing comma should say so rather
+    // than surface as a parser stack trace.
+    throw new GuardrailConfigError(`${path} is not valid JSON: ${(err as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new GuardrailConfigError(`${path} must contain a JSON object`);
+  }
+
   const merged: Guardrails = { ...DEFAULTS, ...parsed };
-  validate(merged);
+  try {
+    validate(merged);
+  } catch (err) {
+    throw new GuardrailConfigError(`${path}: ${(err as Error).message}`);
+  }
   return merged;
 }
 
+/**
+ * Validate the control layer, types first.
+ *
+ * This file is hand-edited, so the realistic failure is a typo rather than a
+ * bad decision - and a typo in a cap used to be silent and dangerous.
+ * `"1,000"` parses to NaN, every comparison against NaN is false, and the cap
+ * it was meant to impose simply stopped existing. Checking ranges without
+ * checking types let that through.
+ */
 export function validate(g: Guardrails): void {
   const problems: string[] = [];
-  if (g.maxDailySpendMinor <= 0) problems.push('maxDailySpendMinor must be > 0');
-  if (g.maxTestBudgetMinor < g.maxDailySpendMinor) {
+
+  const amount = (name: string, value: unknown, { min = 1 }: { min?: number } = {}): number | null => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      // JSON.stringify(NaN) is "null", which hides the very mistake that makes
+      // this check worth having - a cap typed as "1,000".
+      const shown = typeof value === 'number' ? String(value) : JSON.stringify(value);
+      problems.push(`${name} must be a finite number, got ${shown}`);
+      return null;
+    }
+    if (value < min) problems.push(`${name} must be at least ${min}, got ${value}`);
+    return value;
+  };
+  const text = (name: string, value: unknown): void => {
+    if (typeof value !== 'string' || !value.trim()) problems.push(`${name} must be a non-empty string`);
+  };
+  const flag = (name: string, value: unknown): void => {
+    if (typeof value !== 'boolean') problems.push(`${name} must be true or false, got ${JSON.stringify(value)}`);
+  };
+  const list = (name: string, value: unknown, { allowEmpty = true } = {}): void => {
+    if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
+      problems.push(`${name} must be an array of strings`);
+      return;
+    }
+    if (!allowEmpty && value.length === 0) problems.push(`${name} cannot be empty`);
+  };
+
+  const daily = amount('maxDailySpendMinor', g.maxDailySpendMinor);
+  const test = amount('maxTestBudgetMinor', g.maxTestBudgetMinor);
+  const stopLoss = amount('stopLossMinor', g.stopLossMinor);
+  amount('budgetApprovalThresholdMinor', g.budgetApprovalThresholdMinor);
+  amount('minSpendBeforeKillMinor', g.minSpendBeforeKillMinor, { min: 0 });
+  amount('minLeadsBeforeDecision', g.minLeadsBeforeDecision, { min: 0 });
+  amount('maxCallAttemptsPerLead', g.maxCallAttemptsPerLead);
+  amount('maxCallsPerDay', g.maxCallsPerDay);
+  amount('evaluationIntervalHours', g.evaluationIntervalHours, { min: Number.MIN_VALUE });
+  amount('minHoursBetweenBudgetRaises', g.minHoursBetweenBudgetRaises, { min: 0 });
+
+  const step = amount('maxBudgetStepFactor', g.maxBudgetStepFactor, { min: 1 });
+  if (step !== null && step > 2) problems.push(`maxBudgetStepFactor must be between 1 and 2, got ${step}`);
+
+  const holdout = amount('holdoutBudgetShare', g.holdoutBudgetShare, { min: 0 });
+  if (holdout !== null && holdout >= 1) problems.push(`holdoutBudgetShare must be below 1, got ${holdout}`);
+
+  if (daily !== null && test !== null && test < daily) {
     problems.push('maxTestBudgetMinor must be >= maxDailySpendMinor');
   }
-  if (g.stopLossMinor > g.maxTestBudgetMinor) {
+  if (stopLoss !== null && test !== null && stopLoss > test) {
     problems.push('stopLossMinor cannot exceed maxTestBudgetMinor');
   }
-  if (g.allowedGeos.length === 0) problems.push('allowedGeos cannot be empty');
-  if (g.maxBudgetStepFactor < 1 || g.maxBudgetStepFactor > 2) {
-    problems.push('maxBudgetStepFactor must be between 1 and 2');
+
+  list('allowedGeos', g.allowedGeos, { allowEmpty: false });
+  list('allowedObjectives', g.allowedObjectives, { allowEmpty: false });
+  list('excludedNiches', g.excludedNiches);
+  list('bannedClaimPatterns', g.bannedClaimPatterns);
+  text('currency', g.currency);
+  flag('specialAdCategoriesAllowed', g.specialAdCategoriesAllowed);
+  flag('requireExplicitConsent', g.requireExplicitConsent);
+
+  // Deliberately not String(...): an unquoted 91 would satisfy that and then
+  // fail inside toE164 on the first lead, long after the money has been spent.
+  if (typeof g.defaultCountryCode !== 'string' || !/^\d{1,4}$/.test(g.defaultCountryCode)) {
+    problems.push(`defaultCountryCode must be digits in a string, e.g. "91", got ${JSON.stringify(g.defaultCountryCode)}`);
   }
-  if (g.callWindow.startHour >= g.callWindow.endHour) {
+
+  problems.push(...validateCallWindow(g.callWindow));
+  if (problems.length) throw new Error(`Invalid guardrails:\n - ${problems.join('\n - ')}`);
+}
+
+function validateCallWindow(window: Guardrails['callWindow']): string[] {
+  if (!window || typeof window !== 'object') return ['callWindow must be an object'];
+  const problems: string[] = [];
+
+  for (const key of ['startHour', 'endHour'] as const) {
+    const value = window[key];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 24) {
+      problems.push(`callWindow.${key} must be a whole hour between 0 and 24, got ${JSON.stringify(value)}`);
+    }
+  }
+  if (problems.length === 0 && window.startHour >= window.endHour) {
     problems.push('callWindow.startHour must be before endHour');
   }
-  if (g.evaluationIntervalHours <= 0) problems.push('evaluationIntervalHours must be > 0');
-  if (g.minHoursBetweenBudgetRaises < 0) problems.push('minHoursBetweenBudgetRaises cannot be negative');
-  if (problems.length) throw new Error(`Invalid guardrails:\n - ${problems.join('\n - ')}`);
+
+  // A mistyped zone would silently shift the hours people are called in, so it
+  // is checked against the runtime's own list rather than assumed.
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: window.timeZone });
+  } catch {
+    problems.push(`callWindow.timeZone is not a known zone: ${JSON.stringify(window.timeZone)}`);
+  }
+  return problems;
 }
 
 export class GuardrailViolation extends Error {

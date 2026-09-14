@@ -20,10 +20,18 @@ export interface ApplyOptions {
    */
   now?: Date;
   /**
-   * Raising budget unattended honours minHoursBetweenBudgetRaises. A person
-   * running `apply` by hand has already decided to act, so the CLI passes false.
+   * Skip minHoursBetweenBudgetRaises.
+   *
+   * This used to be implied by "a person is running it", on the reasoning that
+   * someone at a terminal has already decided to act. That was wrong. The
+   * operator decides to raise the budget once; they cannot see that the
+   * scheduler raised it ninety seconds ago, and this floor exists precisely to
+   * stop two individually-legal raises from compounding. Overriding it is now
+   * something a person has to type, and it is audited when they do.
    */
-  unattended?: boolean;
+  force?: boolean;
+  /** Who forced it, for the audit trail. */
+  forcedBy?: string;
 }
 
 export type ApplyOutcome =
@@ -81,9 +89,15 @@ export async function applyRecommendation(
     return { kind: 'approval_requested', approvalId: request.approvalId, plan, pausedAds };
   }
 
-  if (options.unattended) {
-    const blocked = budgetRaiseTooSoon(ctx, runId, at);
-    if (blocked) return { kind: 'budget_deferred', reason: blocked, plan, pausedAds };
+  const blocked = budgetRaiseTooSoon(ctx, runId, at);
+  if (blocked) {
+    if (!options.force) return { kind: 'budget_deferred', reason: blocked, plan, pausedAds };
+    // Overriding a cap is itself an event worth being able to find later.
+    ctx.store.audit(runId, 'human', 'budget.floor_overridden', {
+      by: options.forcedBy ?? 'unknown',
+      reason: blocked,
+      to: plan.proposedDailyMinor,
+    });
   }
 
   await ctx.meta.setDailyBudget(campaign.adsetId, plan.proposedDailyMinor);

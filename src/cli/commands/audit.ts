@@ -1,4 +1,5 @@
 import type { Command } from '../registry.ts';
+import { flagIsSet } from '../args.ts';
 import { fail, write } from '../io.ts';
 import { maskPhone } from '../../core/util.ts';
 
@@ -12,11 +13,16 @@ import { maskPhone } from '../../core/util.ts';
 export const auditCommands: Command[] = [
   {
     name: 'audit',
-    usage: '[runId] [--kind K] [--actor A] [--limit N] [--all]',
+    usage: '[runId] [--kind K] [--actor A] [--limit N] [--all] [--system]',
     summary: 'What the system did, and which rules fired',
     run: (ctx, args) => {
-      const runId = args.positional[0] ?? ctx.store.latestRun();
-      if (!runId) return Promise.resolve(fail('no run'));
+      // Events belonging to no run - requests the server refused before it knew
+      // which run they concerned. Without a way to ask for them they were
+      // written and then unreachable by any query in the codebase.
+      const system = flagIsSet(args, 'system');
+      const runId = system ? null : (args.positional[0] ?? ctx.store.latestRun() ?? null);
+      if (!system && !runId) return Promise.resolve(fail('no run'));
+      const label = runId ?? 'system (events with no run)';
 
       const filtered = Boolean(args.flags.kind ?? args.flags.actor);
       const limit = Number(args.flags.limit ?? (args.flags.all === 'true' ? 10_000 : 20));
@@ -26,10 +32,10 @@ export const auditCommands: Command[] = [
       if (!filtered) {
         const summary = ctx.store.auditSummary(runId);
         if (!summary.length) {
-          write(`no audit events for ${runId}`);
+          write(`no audit events for ${label}`);
           return Promise.resolve(0);
         }
-        write(`${runId}\n`);
+        write(`${label}\n`);
         for (const row of summary) {
           write(`  ${String(row.count).padStart(5)}  ${row.kind.padEnd(24)} ${row.actor.padEnd(7)} last ${row.last}`);
         }

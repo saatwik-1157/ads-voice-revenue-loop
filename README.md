@@ -46,7 +46,11 @@ Create it once and pass its id with `--lead-form` — step by step in
 
 ## Quick start
 
-Requires **Node 22.6+** (24 recommended) — TypeScript runs directly, there is no build step.
+Requires **Node 24+** — TypeScript runs directly, there is no build step.
+
+Node 24 is the floor for two reasons, both load-bearing: `node:sqlite` is available without a flag,
+and `.ts` files execute without one. Earlier versions need `--experimental-sqlite` and
+`--experimental-strip-types`, which is a worse deal than upgrading. Verified on 24.18.
 
 ```bash
 npm install

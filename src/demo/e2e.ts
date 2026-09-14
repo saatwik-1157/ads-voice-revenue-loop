@@ -1,5 +1,5 @@
 import type { Context } from '../orchestrator.ts';
-import { exclusionRules } from '../config/guardrails.ts';
+import { exclusionRules, isWithinCallWindow, nextTimeInsideCallWindow } from '../config/guardrails.ts';
 import { hasAnthropicCredentials } from '../config/env.ts';
 import type { MockMetaProvider } from '../meta/mock.ts';
 import type { MockVoiceProvider } from '../voice/mock.ts';
@@ -92,6 +92,20 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
   say(`  ${published.ads.length} ads live at ${money(dailyBudgetMinor, g.currency)}/day for ${days} days`);
 
   say('\nPHASE E+F  leads -> voice -> structured outcomes');
+  // The demo simulates days elapsing, so it simulates the hour those calls
+  // happen too. Judging a simulated call against the real wall clock means
+  // running this after dinner silently skips the entire voice half.
+  const callTime = nextTimeInsideCallWindow(g);
+  const simulated = !isWithinCallWindow(g);
+  if (simulated) {
+    say(
+      `  it is outside the ${g.callWindow.startHour}:00-${g.callWindow.endHour}:00 ${g.callWindow.timeZone} calling window,` +
+        ` so calls are simulated as if placed at ${new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: g.callWindow.timeZone }).format(callTime)} local`,
+    );
+    say('  (a live run would defer them instead - the guardrail is real, only the demo clock is not)');
+  }
+
+  const skipped = { deferred: 0, suppressed: 0 };
   let leadsSeen = 0;
   for (let day = 1; day <= days; day += 1) {
     meta.tick();
@@ -119,12 +133,26 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
         });
         if (intake.status !== 'accepted') continue;
 
-        const dispatch = await dispatchLead(store, voice, g, intake.lead, brief, 'http://localhost/demo', {
-          // The mock voice agent uses this to correlate outcome quality with the
-          // creative, so the decision engine has a real signal to find.
-          creative_quality: meta.quality(ad.adId).toFixed(3),
-        });
-        if (dispatch.status !== 'dispatched') continue;
+        const dispatch = await dispatchLead(
+          store,
+          voice,
+          g,
+          intake.lead,
+          brief,
+          'http://localhost/demo',
+          {
+            // The mock voice agent uses this to correlate outcome quality with
+            // the creative, so the decision engine has a real signal to find.
+            creative_quality: meta.quality(ad.adId).toFixed(3),
+          },
+          callTime,
+        );
+        if (dispatch.status !== 'dispatched') {
+          // A skipped dispatch must never be silent: it is the difference
+          // between a broken funnel and a guardrail doing its job.
+          skipped[dispatch.status] += 1;
+          continue;
+        }
 
         const outcome = voice.simulateOutcome(dispatch.callRef);
         handleCallWebhook(store, {
@@ -143,7 +171,10 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
         });
       }
     }
-    say(`  day ${day}: ${store.countLeads(runId)} leads captured and called so far`);
+    const note = skipped.deferred || skipped.suppressed
+      ? ` (${skipped.deferred} deferred, ${skipped.suppressed} suppressed)`
+      : '';
+    say(`  day ${day}: ${store.countLeads(runId)} leads captured and called so far${note}`);
   }
 
   say('\nPHASE G  AI review');

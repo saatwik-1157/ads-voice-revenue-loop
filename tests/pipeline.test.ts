@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/store/db.ts';
-import { defaultGuardrails } from '../src/config/guardrails.ts';
+import { defaultGuardrails, isWithinCallWindow, nextTimeInsideCallWindow } from '../src/config/guardrails.ts';
 import { fromMetaLeadgen, intakeLead } from '../src/pipeline/intake.ts';
 import { dispatchLead } from '../src/pipeline/dispatch.ts';
 import { handleCallWebhook, verifySignature, verifyToken } from '../src/pipeline/webhooks.ts';
@@ -221,4 +221,40 @@ test('a static token authenticates a provider that cannot sign the body', () => 
   assert.equal(verifyToken('short', 'shared-token'), false);
   assert.equal(verifyToken('shared-token', ''), false, 'an unset token fails closed');
   assert.equal(verifyToken('', 'shared-token'), false, 'a missing header fails closed');
+});
+
+test('a dispatch is judged against the time it is claimed to happen', async () => {
+  // Regression: the demo simulates days elapsing but the window was checked
+  // against the real wall clock, so running it outside working hours deferred
+  // every call and reported "0 connected" - a working guardrail that read as a
+  // broken funnel.
+  const store = freshStore();
+  const voice = new MockVoiceProvider();
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const intake = intakeLead(store, G, runId, VALID_LEAD);
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+
+  const window = { ...G, callWindow: { startHour: 9, endHour: 17, timeZone: 'UTC' } };
+  const inside = new Date('2026-09-14T12:00:00Z');
+  const outside = new Date('2026-09-14T23:00:00Z');
+
+  const deferred = await dispatchLead(store, voice, window, intake.lead, brief, 'http://x/hook', {}, outside);
+  assert.equal(deferred.status, 'deferred');
+
+  const sent = await dispatchLead(store, voice, window, intake.lead, brief, 'http://x/hook', {}, inside);
+  assert.equal(sent.status, 'dispatched');
+  store.close();
+});
+
+test('nextTimeInsideCallWindow finds an hour the window accepts', () => {
+  const window = { ...G, callWindow: { startHour: 9, endHour: 17, timeZone: 'UTC' } };
+  for (const from of ['2026-09-14T23:00:00Z', '2026-09-14T03:00:00Z', '2026-09-14T12:00:00Z']) {
+    const at = nextTimeInsideCallWindow(window, new Date(from));
+    assert.ok(isWithinCallWindow(window, at), `${from} -> ${at.toISOString()} must be inside the window`);
+  }
+  // Already inside means no movement at all.
+  const noon = new Date('2026-09-14T12:00:00Z');
+  assert.equal(nextTimeInsideCallWindow(window, noon).getTime(), noon.getTime());
 });

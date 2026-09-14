@@ -131,8 +131,9 @@ curl localhost:8787/runs/<runId>                            # economics + live r
 ```
 
 `POST /leads` and `POST /revenue` place calls and move revenue, so they are closed unless
-`FL_ADMIN_TOKEN` is set and sent as `x-fl-admin-token`. The two webhook routes are gated on HMAC
-signatures instead.
+`FL_ADMIN_TOKEN` is set and sent as `x-fl-admin-token`. The webhook routes authenticate differently:
+Meta is HMAC-only, and the voice route prefers HMAC but accepts a static token for platforms that
+cannot sign a body. All of them fail closed when nothing is configured.
 
 ## The control layer
 
@@ -380,13 +381,13 @@ which half is our contract (the post-call webhook) and which half is a guess at 
 
 ```
 src/
-  config/      control layer (guardrails) + env
-  core/        types, ids, phone normalization, redaction
+  config/      control layer (guardrails), niche exclusion rules, env
+  core/        types, ids, phone normalization, redaction, retry/backoff
   store/       SQLite: runs, briefs, approvals, campaigns, leads, calls, revenue,
                spend, suppression, cycles, locks, audit, idempotency
   brief/       niche scoring, offer + creative + script, claim checking, Claude adapter
   meta/        provider interface, Marketing API client, mock delivery, publisher
-  voice/       provider interface, OmniDimension client, mock voice agent
+  voice/       provider interface, OmniDimension client, mock agent, contract probe
   pipeline/    lead intake, dispatch, webhooks
   economics/   funnel metrics, decision engine
   approvals/   human gates #1 and #2
@@ -395,4 +396,8 @@ src/
   apply.ts     the one path both `apply` and the scheduler act through
   server/      webhook middleware
   demo/        the 48-hour MVP in one command
+
+docs/          setup guides for the two external accounts
+tests/         113 tests, run by `npm test` and on every push
+assets/        drop cleared artwork here (empty = generated fallback)
 ```

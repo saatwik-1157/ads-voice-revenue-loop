@@ -8,5 +8,7 @@
   "budgetApprovalThresholdMinor": 200000,
   "minLeadsBeforeDecision": 15,
   "minSpendBeforeKillMinor": 80000,
+  "evaluationIntervalHours": 24,
+  "minHoursBetweenBudgetRaises": 24,
   "callWindow": { "startHour": 10, "endHour": 19, "timeZone": "Asia/Kolkata" }
 }

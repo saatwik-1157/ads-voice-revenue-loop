@@ -4,6 +4,9 @@ import type { Brief, CreativeVariant } from '../core/types.ts';
 import type { CreativeAssetProvider, ProducedAsset } from './provider.ts';
 import { AssetError, imageInfo } from './provider.ts';
 
+/** Records which files in an asset directory were machine-made. */
+export const GENERATED_MANIFEST = '.generated.json';
+
 export interface LibraryOptions {
   /** Directory of cleared artwork. */
   dir: string;
@@ -69,9 +72,26 @@ export class LibraryAssetProvider implements CreativeAssetProvider {
       contentType: info.format === 'png' ? 'image/png' : 'image/jpeg',
       width: info.width,
       height: info.height,
-      provenance: 'library',
+      // Putting a file in this directory is the act that vouches for it, so
+      // `library` means a person cleared it. Machine-made files record
+      // themselves in the manifest and keep saying so, or the gate #1 warning
+      // about generated imagery could be silenced by moving a file.
+      provenance: this.#generated().has(chosen) ? 'rendered' : 'library',
       origin: path,
     };
+  }
+
+  /** Filenames a generator wrote here, as recorded in the manifest. */
+  #generated(): Set<string> {
+    const manifest = join(this.#dir, GENERATED_MANIFEST);
+    if (!existsSync(manifest)) return new Set();
+    try {
+      const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as { generated?: unknown };
+      return new Set(Array.isArray(parsed.generated) ? parsed.generated.filter((f) => typeof f === 'string') : []);
+    } catch {
+      // An unreadable manifest must not upgrade machine art to cleared art.
+      return new Set(this.files());
+    }
   }
 
   /** Prefer a file whose name names the angle; otherwise take a stable slot. */

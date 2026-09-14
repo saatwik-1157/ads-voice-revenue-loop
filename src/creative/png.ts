@@ -37,6 +37,13 @@ export class Bitmap {
     this.fillRect(0, 0, width, height, background);
   }
 
+  /** Reads back a pixel, so compositing passes can blend with what is there. */
+  get(x: number, y: number): Rgb {
+    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return { r: 0, g: 0, b: 0 };
+    const offset = (y * this.width + x) * 3;
+    return { r: this.pixels[offset]!, g: this.pixels[offset + 1]!, b: this.pixels[offset + 2]! };
+  }
+
   set(x: number, y: number, color: Rgb): void {
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return;
     const offset = (y * this.width + x) * 3;

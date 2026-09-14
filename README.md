@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 125 tests covering the guardrails, the loop, retries, scheduling and creative
+npm test                      # 128 tests covering the guardrails, the loop, retries, scheduling and creative
 ```
 
 ### Credentials
@@ -231,7 +231,10 @@ Two providers fill that in, behind one interface:
 
 - **`assets/` — the approved asset library.** Drop cleared PNG or JPEG artwork in and it is used.
   This is what you actually run: a person made the artwork, owns or licensed it, and is happy for it
-  to carry a budget. A filename naming an angle serves that angle (`speed-01.png` → the "Speed"
+  to carry a budget. That act of putting the file there is the vouch, which is why it cannot be
+  faked: `scripts/generate-placeholder-assets.ts` fills the directory for demonstration, and records
+  what it wrote in `.generated.json` so those files keep reporting as machine-made and gate #1 keeps
+  warning. A filename naming an angle serves that angle (`speed-01.png` → the "Speed"
   variants); everything else comes from the pool in a stable order, so a variant keeps its image
   across republishes. Format, dimensions and size are read from the file header — not the extension —
   before anything is uploaded, because finding out from Meta after the fact is slow and confusing.
@@ -399,6 +402,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         125 tests, run by `npm test` and on every push
+tests/         128 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

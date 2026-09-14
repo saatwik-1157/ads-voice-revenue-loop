@@ -11,6 +11,7 @@ import {
 } from '../config/guardrails.ts';
 import { now } from '../core/util.ts';
 import { GATE_1 } from '../approvals/gates.ts';
+import { checkClaims, checkPromiseAlignment } from '../brief/claims.ts';
 import { missingAssets } from '../creative/pipeline.ts';
 
 export interface PublishOptions {
@@ -47,6 +48,28 @@ export async function publishCampaign(
 ): Promise<PublishResult> {
   if (!store.hasApproval(runId, GATE_1)) {
     throw new GuardrailViolation('gate_1', `run ${runId} has no approved gate #1; nothing may be published`);
+  }
+
+  // Re-checked here, against the brief actually being sent, and not only at
+  // gate #1. An approval is a decision about the brief as it stood then; this
+  // is the last point before the copy is real. Both checks existed already and
+  // neither stopped anything: a brief promising "guaranteed results" was
+  // flagged at the gate, approved anyway, and published - while the gate's own
+  // documentation said blocking issues could not be approved past.
+  const claims = checkClaims(brief, g);
+  if (claims.length) {
+    const detail = claims.map((i) => `${i.field}: "${i.pattern}"`).join('; ');
+    throw new GuardrailViolation(
+      'banned_claim',
+      `brief makes ${claims.length} claim(s) the control layer forbids - ${detail}. Regenerate the brief; this is not approvable.`,
+    );
+  }
+  const drift = checkPromiseAlignment(brief);
+  if (drift.length) {
+    throw new GuardrailViolation(
+      'promise_drift',
+      `the voice script does not match what the ad promised - ${drift.join('; ')}`,
+    );
   }
 
   const objective = g.allowedObjectives[0]!;

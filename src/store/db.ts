@@ -357,12 +357,24 @@ export class Store {
     return Number(res.changes) > 0;
   }
 
+  /** One approval by id, so a decision on it can be audited and checked. */
+  getApproval(
+    approvalId: string,
+  ): { approvalId: string; runId: string; gate: string; subject: string; status: string; detail: string | null } | null {
+    const row = this.db
+      .prepare(
+        `SELECT approval_id as approvalId, run_id as runId, gate, subject, status, detail
+         FROM approvals WHERE approval_id = ?`,
+      )
+      .get(approvalId) as
+      | { approvalId: string; runId: string; gate: string; subject: string; status: string; detail: string | null }
+      | undefined;
+    return row ?? null;
+  }
+
   /** Which run an approval belongs to, so a decision on it is auditable there. */
   approvalRun(approvalId: string): string | null {
-    const row = this.db.prepare('SELECT run_id as runId FROM approvals WHERE approval_id = ?').get(approvalId) as
-      | { runId: string }
-      | undefined;
-    return row?.runId ?? null;
+    return this.getApproval(approvalId)?.runId ?? null;
   }
 
   pendingApprovals(runId: string): Array<{ approvalId: string; gate: string; subject: string; detail: string }> {

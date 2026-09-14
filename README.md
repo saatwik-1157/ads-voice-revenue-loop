@@ -31,7 +31,7 @@ a sale can be attributed to the exact hook that paid for it.
 | A. Control layer | [`src/config/guardrails.ts`](src/config/guardrails.ts), [`config/guardrails.json`](config/guardrails.json) | complete |
 | B. AI brief | [`src/brief/`](src/brief) | complete; the offline writer is what has actually been exercised — see [Credentials](#credentials) |
 | C. Human gate #1 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
-| D. Meta execution | [`src/meta/`](src/meta) | API client complete; **untested against a live ad account** |
+| D. Meta execution | [`src/meta/`](src/meta) | API client complete; **untested against a live ad account** - run `preflight` first |
 | E. Lead handoff | [`src/pipeline/intake.ts`](src/pipeline/intake.ts), [`dispatch.ts`](src/pipeline/dispatch.ts) | complete |
 | E2. Lead retrieval | [`src/server/http.ts`](src/server/http.ts), [`src/meta/api.ts`](src/meta/api.ts) | complete — the webhook carries a `leadgen_id`, the answers are fetched |
 | F. Call result | [`src/pipeline/webhooks.ts`](src/pipeline/webhooks.ts) | complete — our contract; configure the agent to match ([guide](docs/omnidimension.md)) |
@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 206 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 214 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -105,6 +105,7 @@ node src/cli.ts schedule --every 6h                 # the cycle on a loop
 node src/cli.ts cycles [runId]                      # what the loop has been doing
 node src/cli.ts serve --schedule --every 6h         # webhook middleware + the loop
 node src/cli.ts contract-test                       # probe the voice API before trusting it
+node src/cli.ts preflight [--lead-form ID]          # read-only checks on the real ad account
 ```
 
 `npm run ci` runs lint, typecheck and tests together - the same three things CI runs on every push.
@@ -417,17 +418,28 @@ These are enforced in code, not just documented:
 
 1. Fill in `.env` from `.env.example` and set `FL_MODE=live`. The process refuses to start with
    incomplete credentials rather than half-publishing a campaign.
-2. Create the Meta instant form on your Page and pass its id with `--lead-form` — the full walkthrough,
+2. **Run `node src/cli.ts preflight` before anything else.** Every call it makes is a GET — it creates
+   nothing and spends nothing — and it answers the questions that are otherwise answered at the worst
+   possible moment: is the token valid and when does it expire, does it hold `leads_retrieval`
+   (without it, you find out when your first real lead arrives and its answers cannot be fetched), is
+   the ad account active, does the instant form actually ask for a phone number, and **does the
+   account bill in the same currency the control layer is written in**. That last one is the
+   expensive one: budgets go to Meta as an integer of the *account's* minor units while every cap
+   here is in the guardrails' currency, so an INR control layer against a USD account turns a
+   ₹1,000/day cap into a $1,000/day campaign, with the stop-loss and CPL target denominated wrong at
+   the same time. `publish` refuses on a mismatch; `preflight` tells you before you get that far and
+   names the line to change. Add `--lead-form ID` to check the form too.
+3. Create the Meta instant form on your Page and pass its id with `--lead-form` — the full walkthrough,
    including the `leads_retrieval` permission and Lead Access grant that leads silently depend on, is
    in [docs/meta-instant-form.md](docs/meta-instant-form.md). Artwork is handled for you — drop
    cleared files in `assets/` or let the generated fallback produce them; either way `brief` uploads
    them and publishing a creative without an `image_hash` is refused.
-3. Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `FL_ADMIN_TOKEN`, and either
+4. Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `FL_ADMIN_TOKEN`, and either
    `OMNI_WEBHOOK_SECRET` (HMAC, preferred) or `OMNI_WEBHOOK_TOKEN` (static header, weaker).
    Expose the server (`node src/cli.ts serve`) at a public HTTPS URL and point both webhooks at it:
    - `POST /webhooks/meta` — leadgen (verify subscription at `GET /webhooks/meta`)
    - `POST /webhooks/omnidimension` — post-call results
-4. Publish **paused** first (`publish` without `--activate`), look at it in Ads Manager, then
+5. Publish **paused** first (`publish` without `--activate`), look at it in Ads Manager, then
    activate.
 
 Confirm your OmniDimension agent's dispatch endpoint and post-call payload field names against
@@ -486,6 +498,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         206 tests, run by `npm test` and on every push
+tests/         214 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

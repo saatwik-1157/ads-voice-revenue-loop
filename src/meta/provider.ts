@@ -72,6 +72,29 @@ export interface MetaProvider {
    * the request body.
    */
   fetchLead(leadgenId: string): Promise<RetrievedLead>;
+
+  /**
+   * What the ad account actually is, before anything is spent through it.
+   *
+   * The currency is the load-bearing field. Budgets go to Meta as an integer of
+   * the *account's* minor units, while every cap in the control layer is in the
+   * guardrails' currency, and nothing used to check that the two agreed.
+   * Guardrails in INR against a USD account turn a "₹1,000/day" cap into a
+   * $1,000/day campaign - about 85x the intended spend, with the stop-loss, the
+   * CPL target and every other limit silently denominated wrong.
+   */
+  accountSummary(): Promise<AccountSummary>;
+}
+
+export interface AccountSummary {
+  accountId: string;
+  name: string | null;
+  /** ISO 4217, as Meta reports it. Must match Guardrails.currency. */
+  currency: string;
+  /** Meta's account_status: 1 is ACTIVE. Anything else cannot run ads. */
+  status: number | null;
+  timezone: string | null;
+  disableReason: number | null;
 }
 
 export interface RetrievedLead {

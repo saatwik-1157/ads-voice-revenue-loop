@@ -207,8 +207,23 @@ them that way.
 
 ## 7. Test it before you spend
 
-Use Meta's **Lead Ads Testing Tool** (developers.facebook.com/tools/lead-ads-testing). Pick your Page
-and form, submit a test lead, and watch:
+Start with preflight. Every call it makes is a GET, so it creates nothing and spends nothing:
+
+```bash
+node src/cli.ts preflight --lead-form <formId>
+```
+
+It checks the things that are otherwise discovered at the worst moment — a token that expires next
+week, a missing `leads_retrieval` scope (without it you find out when your first real lead arrives
+and its answers cannot be fetched), a form with no phone question, and an ad account that bills in a
+different currency from the one `config/guardrails.json` is written in. That last one matters more
+than it sounds: budgets are sent as an integer of the account's minor units while every cap is
+checked in the guardrails' currency, so an INR control layer against a USD account turns a ₹1,000/day
+cap into a $1,000/day campaign. `publish` refuses on a mismatch — preflight tells you first, and names
+the line to change.
+
+Then use Meta's **Lead Ads Testing Tool** (developers.facebook.com/tools/lead-ads-testing). Pick your
+Page and form, submit a test lead, and watch:
 
 ```
   accepted  lead_3b381ee946c147f8  +91******3210  dispatched

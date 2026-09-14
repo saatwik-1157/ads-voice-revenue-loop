@@ -308,3 +308,39 @@ test('a lost or pending call records no revenue and no revenue audit', async () 
   assert.equal(store.listAudit(runId, { kind: 'revenue.recorded' }).length, 0, 'a forecast is not revenue');
   store.close();
 });
+
+test('the per-lead attempt cap is a rule, not a line in the config', async () => {
+  // maxCallAttemptsPerLead was declared in the guardrails, validated on load and
+  // printed by `guardrails`, and read by nothing that places a call. It is the
+  // rule that stops one person being dialled over and over, so an unenforced
+  // version was worse than none: the control layer claimed they were protected.
+  const store = freshStore();
+  const voice = new MockVoiceProvider(7);
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+
+  const intake = intakeLead(store, G, runId, VALID_LEAD);
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+  const lead = intake.lead;
+  const cap = { ...G, maxCallAttemptsPerLead: 2 };
+
+  for (let attempt = 1; attempt <= cap.maxCallAttemptsPerLead; attempt += 1) {
+    // A distinct metadata value per attempt, so it is the cap doing the work
+    // here and not the de-duplication that stops an accidental double-send.
+    const result = await dispatchLead(store, voice, cap, lead, brief, 'http://localhost/hook', {
+      attempt: String(attempt),
+    });
+    assert.equal(result.status, 'dispatched', `attempt ${attempt} is within the cap`);
+    handleCallWebhook(store, { call_id: `call_${attempt}`, lead_id: lead.leadId, connected: false });
+  }
+
+  const third = await dispatchLead(store, voice, cap, lead, brief, 'http://localhost/hook', { attempt: '3' });
+  assert.equal(third.status, 'suppressed', 'the third call is refused');
+  assert.match(third.reason, /maxCallAttemptsPerLead/);
+  assert.equal(store.callCountForLead(lead.leadId), 2, 'and no third call was placed');
+
+  const audited = store.listAudit(runId, { kind: 'call.attempts_exhausted' });
+  assert.equal(audited.length, 1, 'refusing to dial again is recorded like any other refusal');
+  store.close();
+});

@@ -167,7 +167,7 @@ test('economics count every stage of the funnel separately', async () => {
   }
   const e = economicsForRun(store, runId);
   assert.equal(e.leads, 10);
-  assert.equal(e.connectedCalls, 6);
+  assert.equal(e.connectedLeads, 6);
   assert.equal(e.qualifiedLeads, 4);
   assert.equal(e.appointments, 3);
   assert.equal(e.sales, 2);
@@ -213,5 +213,89 @@ test('publishing over the cap is refused outright', async () => {
       }),
     /daily_cap/,
   );
+  store.close();
+});
+
+test('a second call attempt does not turn one lead into two', async () => {
+  // maxCallAttemptsPerLead defaults to 2, so more than one call row per lead is
+  // normal. Counting joined rows meant the retry doubled the lead count, which
+  // halved CPL and halved the connect rate at the same time: the campaign read
+  // as twice as efficient as it was, and the funnel read as broken.
+  const { store, runId } = await seed();
+  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 100000, impressions: 1000, clicks: 40, leads: 10, asOf: now() });
+
+  const leadIds: string[] = [];
+  for (let i = 0; i < 10; i += 1) {
+    const intake = intakeLead(store, G, runId, {
+      name: `Lead ${i}`,
+      phone: `9${String(700000000 + i * 37)}`,
+      consent: true,
+      consentSource: 'meta_instant_form',
+      adId: 'ad_1',
+    });
+    if (intake.status !== 'accepted') throw new Error('setup failed');
+    leadIds.push(intake.lead.leadId);
+  }
+
+  for (const [i, leadId] of leadIds.entries()) {
+    handleCallWebhook(store, { call_id: `first_${i}`, lead_id: leadId, connected: false });
+  }
+  const afterOne = economicsForRun(store, runId);
+  assert.equal(afterOne.leads, 10);
+  assert.equal(afterOne.cplMinor, 10000);
+
+  for (const [i, leadId] of leadIds.entries()) {
+    handleCallWebhook(store, { call_id: `second_${i}`, lead_id: leadId, connected: true, qualified: i < 5 });
+  }
+  const afterTwo = economicsForRun(store, runId);
+
+  assert.equal(afterTwo.leads, 10, 'a lead called twice is still one lead');
+  assert.equal(afterTwo.cplMinor, 10000, 'and CPL does not halve itself');
+  assert.equal(afterTwo.connectedLeads, 10);
+  assert.equal(afterTwo.connectRate, 1, 'everyone was reached on the second attempt');
+  assert.equal(afterTwo.qualifyRate, 0.5, '5 of the 10 reached qualified');
+  store.close();
+});
+
+test('leads nobody has dialled yet are not a pipeline fault', async () => {
+  // A call deferred outside the window writes an audit row and no call row, so
+  // a cycle at 02:00 saw leads with no connections and reported a pipeline
+  // fault while the queue was simply waiting for 10:00.
+  const { store, runId, brief } = await seed();
+  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 90000, impressions: 5000, clicks: 80, leads: 20, asOf: now() });
+  for (let i = 0; i < 20; i += 1) addLead(store, runId, i, {});
+
+  const rec = evaluate(store, G, runId, brief);
+  assert.equal(rec.signal, 'calls_pending');
+  assert.equal(rec.decision, 'KEEP', 'nothing is known yet, so nothing changes');
+  assert.match(rec.action, /not a creative fault/i);
+  assert.equal(rec.economics.leadsAwaitingCall, 20);
+  assert.equal(rec.economics.calledLeads, 0);
+  store.close();
+});
+
+test('once the leads are actually dialled, a real connect failure is still caught', async () => {
+  const { store, runId, brief } = await seed();
+  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 90000, impressions: 5000, clicks: 80, leads: 20, asOf: now() });
+  for (let i = 0; i < 20; i += 1) addLead(store, runId, i, { connected: false });
+
+  const rec = evaluate(store, G, runId, brief);
+  assert.equal(rec.signal, 'low_connect_rate');
+  assert.equal(rec.decision, 'ITERATE');
+  assert.equal(rec.economics.leadsAwaitingCall, 0, 'every lead has an outcome');
+  store.close();
+});
+
+test('a healthy funnel is not derailed by a tail of undialled leads', async () => {
+  // Most leads dialled and connecting, a few still queued: the queued ones must
+  // not drag the diagnosis, because they are not evidence either way.
+  const { store, runId, brief } = await seed();
+  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 90000, impressions: 5000, clicks: 80, leads: 20, asOf: now() });
+  for (let i = 0; i < 16; i += 1) addLead(store, runId, i, { connected: true, qualified: i < 9 });
+  for (let i = 16; i < 20; i += 1) addLead(store, runId, i, {});
+
+  const rec = evaluate(store, G, runId, brief);
+  assert.notEqual(rec.signal, 'calls_pending', 'the dialled majority is judgeable');
+  assert.notEqual(rec.signal, 'low_connect_rate', '16 of 16 dialled leads connected');
   store.close();
 });

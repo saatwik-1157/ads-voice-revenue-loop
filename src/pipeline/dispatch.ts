@@ -55,6 +55,25 @@ export async function dispatchLead(
     return { status: 'deferred', leadId: lead.leadId, reason: `daily call ceiling ${g.maxCallsPerDay} reached` };
   }
 
+  // This cap was declared in the guardrails, validated on load, and printed by
+  // `guardrails` - and read by nothing that places a call. It is the rule that
+  // stops one person being dialled over and over, so an unenforced version was
+  // worse than none: the control layer said they were protected.
+  const attempts = store.callCountForLead(lead.leadId);
+  if (attempts >= g.maxCallAttemptsPerLead) {
+    store.setLeadCallStatus(lead.leadId, 'completed');
+    store.audit(lead.runId, 'system', 'call.attempts_exhausted', {
+      leadId: lead.leadId,
+      attempts,
+      cap: g.maxCallAttemptsPerLead,
+    });
+    return {
+      status: 'suppressed',
+      leadId: lead.leadId,
+      reason: `already called ${attempts} time(s); maxCallAttemptsPerLead is ${g.maxCallAttemptsPerLead}`,
+    };
+  }
+
   const metadata: Record<string, string> = {
     lead_id: lead.leadId,
     run_id: lead.runId,

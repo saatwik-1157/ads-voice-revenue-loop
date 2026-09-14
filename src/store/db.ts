@@ -479,6 +479,12 @@ export class Store {
     return row ? { ...row, consent: row.consent === 1 } : undefined;
   }
 
+  /** How many call outcomes this lead already has, for the per-lead attempt cap. */
+  callCountForLead(leadId: string): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM calls WHERE lead_id = ?').get(leadId) as { n: number };
+    return row.n;
+  }
+
   setLeadCallStatus(leadId: string, status: Lead['callStatus']): void {
     this.db.prepare('UPDATE leads SET call_status = ? WHERE lead_id = ?').run(status, leadId);
   }

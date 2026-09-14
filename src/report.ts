@@ -30,7 +30,7 @@ export function formatEconomics(e: Economics, g: Guardrails): string {
   return [
     `  spend            ${money(e.spendMinor, g.currency)}`,
     `  leads            ${e.leads}`,
-    `  connected calls  ${e.connectedCalls}   (${pct(e.connectRate)})`,
+    `  leads reached    ${e.connectedLeads}   (${pct(e.connectRate)})`,
     `  qualified leads  ${e.qualifiedLeads}   (${pct(e.qualifyRate)} of connected)`,
     `  appointments     ${e.appointments}`,
     `  sales            ${e.sales}`,

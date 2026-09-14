@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 178 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 183 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -165,7 +165,11 @@ What that buys you, concretely:
   never moves it past the threshold.
 - **The stop-loss outranks every other signal.** Once net loss reaches it, the only recommendation
   is KILL, and it is flagged as needing a human.
-- **No calls outside the calling window**, none to a suppressed number, none past the daily ceiling.
+- **No calls outside the calling window**, none to a suppressed number, none past the daily ceiling,
+  and no more than `maxCallAttemptsPerLead` to the same person. That last one was declared here,
+  validated on load and printed by `guardrails` for a while before anything that places a call read
+  it — an unenforced version of a rule protecting a stranger's phone is worse than no rule, because
+  the config says they are covered.
 - **Blocked niches are dropped before scoring**, so an off-limits market never reaches a human for
   approval. Special ad categories are declared `NONE` and blocked by default.
 - **A cap that is malformed is a cap that does not exist**, so the file is validated by type before
@@ -212,7 +216,8 @@ fault by generating more creative:
 | `stop_loss` | net loss hit the cap | KILL, hand to a human |
 | `no_delivery` / `no_leads` | spend but nothing arriving | ITERATE — check delivery, approval, tracking. **Explicitly not** "regenerate creative" |
 | `insufficient_data` | below the decision threshold | KEEP — the sample cannot support a verdict |
-| `low_connect_rate` | leads do not answer | ITERATE — phone capture, calling delay, time of day |
+| `calls_pending` | leads arrived, most not dialled yet | KEEP — deferral is not a fault; check the window, the daily ceiling, or a stopped dispatcher |
+| `low_connect_rate` | dialled leads do not answer | ITERATE — phone capture, calling delay, time of day |
 | `poor_qualification` | they answer but do not qualify | ITERATE — targeting or offer, not more spend |
 | `qualified_no_conversion` | right people, lost at the ask | ITERATE — objections, pricing, trust, script |
 | `profitable_cohort` | ROAS ≥ target on real sales | SCALE — gradual step, holdout enforced |
@@ -220,6 +225,19 @@ fault by generating more creative:
 
 Each creative is judged separately, but only after it has had a fair share of spend — otherwise the
 engine just kills whichever ad the auction happened to starve.
+
+**Every stage counts leads, not call rows.** `maxCallAttemptsPerLead` is 2 by default, so a lead can
+have more than one call, and joining leads to calls yields a row per attempt. Counting those rows
+meant a second attempt doubled the lead count — halving CPL and halving the connect rate at the same
+time, so a losing campaign read as twice as efficient as it was while a healthy funnel read as
+broken. A lead reached on the second try was reached once.
+
+**A lead nobody has dialled is not evidence about dialling.** A call deferred outside the calling
+window writes an audit row and no call row, so a cycle at 02:00 saw leads with no connections and
+reported a pipeline fault while the queue was simply waiting for 10:00. `low_connect_rate` is now
+judged over the leads that actually have an outcome; the rest surface as `calls_pending`. The
+reported connect rate still measures leads reached against every lead paid for — that number should
+stay honest about leads you never got to.
 
 ### Scaling and the holdout
 
@@ -432,6 +450,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         178 tests, run by `npm test` and on every push
+tests/         183 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

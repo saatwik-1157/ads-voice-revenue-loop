@@ -158,7 +158,12 @@ export interface SpendPoint {
 export interface Economics {
   spendMinor: number;
   leads: number;
-  connectedCalls: number;
+  /** Leads a call outcome has come back for. The population dialling is judged on. */
+  calledLeads: number;
+  /** Accepted leads not dialled yet - deferred outside the window, or queued. */
+  leadsAwaitingCall: number;
+  /** Leads reached at least once, not call attempts - see metrics.ts. */
+  connectedLeads: number;
   qualifiedLeads: number;
   appointments: number;
   sales: number;

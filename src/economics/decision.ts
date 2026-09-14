@@ -97,18 +97,40 @@ function diagnose(e: Economics, g: Guardrails, brief: Brief): Diagnosis {
     };
   }
 
-  if (e.connectRate !== null && e.connectRate < m.targetConnectRate * 0.6) {
+  // A lead nobody has dialled is not evidence about dialling.
+  //
+  // A call deferred outside the calling window writes an audit row and no call
+  // row, so a cycle running at 02:00 saw 20 leads and no connections and called
+  // it a pipeline fault - "validate phone capture" - while the queue was simply
+  // waiting for 10:00. The same false reading appeared mid-delivery, before the
+  // first outcomes had come back.
+  if (e.leadsAwaitingCall > 0 && (e.calledLeads < 5 || e.leadsAwaitingCall > e.calledLeads)) {
+    return {
+      decision: 'KEEP',
+      signal: 'calls_pending',
+      rationale: `${e.leadsAwaitingCall} of ${e.leads} leads have not been dialled yet; ${e.calledLeads} have an outcome`,
+      action:
+        'Nothing to judge yet, and nothing to change. If the queue is not draining the cause is the calling window, maxCallsPerDay, or a dispatcher that is not running - `audit --kind call.deferred` names it. Not a creative fault.',
+      requiresHumanApproval: false,
+    };
+  }
+
+  // Judged over the leads actually dialled, not over every lead. The run-wide
+  // connectRate stays honest about leads paid for and never reached; it is just
+  // the wrong denominator for asking whether dialling itself works.
+  const dialledConnectRate = e.calledLeads > 0 ? e.connectedLeads / e.calledLeads : null;
+  if (dialledConnectRate !== null && dialledConnectRate < m.targetConnectRate * 0.6) {
     return {
       decision: 'ITERATE',
       signal: 'low_connect_rate',
-      rationale: `connect rate ${pct(e.connectRate)} is far below target ${pct(m.targetConnectRate)}`,
+      rationale: `${pct(dialledConnectRate)} of the ${e.calledLeads} leads dialled connected, against a ${pct(m.targetConnectRate)} target`,
       action:
         'Validate phone capture and normalization, time-to-first-call, and calling hours before spending more. This is a pipeline fault, not a creative fault.',
       requiresHumanApproval: false,
     };
   }
 
-  if (e.qualifyRate !== null && e.connectedCalls >= 5 && e.qualifyRate < m.targetQualifiedRate * 0.6) {
+  if (e.qualifyRate !== null && e.connectedLeads >= 5 && e.qualifyRate < m.targetQualifiedRate * 0.6) {
     return {
       decision: 'ITERATE',
       signal: 'poor_qualification',
@@ -172,7 +194,7 @@ function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decisio
   if (e.sales > 0 && e.roas !== null && e.roas >= brief.successMetrics.targetRoas) return 'SCALE';
   if (e.leads === 0) return 'KILL';
   if (e.cplMinor !== null && e.cplMinor > brief.successMetrics.targetCplMinor * 2) return 'KILL';
-  if (e.qualifiedLeads === 0 && e.connectedCalls >= 5) return 'ITERATE';
+  if (e.qualifiedLeads === 0 && e.connectedLeads >= 5) return 'ITERATE';
   return 'KEEP';
 }
 

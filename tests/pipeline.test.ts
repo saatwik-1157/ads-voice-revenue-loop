@@ -258,3 +258,53 @@ test('nextTimeInsideCallWindow finds an hour the window accepts', () => {
   const noon = new Date('2026-09-14T12:00:00Z');
   assert.equal(nextTimeInsideCallWindow(window, noon).getTime(), noon.getTime());
 });
+
+test('money moving gets its own audit entry, on both paths', async () => {
+  // Found by using the audit command: the voice path recorded revenue without
+  // auditing it, so a sale - the most important thing that happens here - was
+  // only implied by the call outcome.
+  const store = freshStore();
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const intake = intakeLead(store, G, runId, VALID_LEAD);
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+
+  handleCallWebhook(store, {
+    call_id: 'call_won',
+    lead_id: intake.lead.leadId,
+    connected: true,
+    qualified: true,
+    sale_status: 'won',
+    expected_value: 5000,
+  });
+
+  const recorded = store.listAudit(runId, { kind: 'revenue.recorded' });
+  assert.equal(recorded.length, 1, 'a won sale is audited, not merely stored');
+  const detail = JSON.parse(recorded[0]!.detail) as Record<string, unknown>;
+  assert.equal(detail.amountMinor, 500000);
+  assert.equal(detail.source, 'voice_agent');
+  assert.equal(detail.adId, 'ad_1', 'the sale is attributable from the audit line alone');
+  store.close();
+});
+
+test('a lost or pending call records no revenue and no revenue audit', async () => {
+  const store = freshStore();
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const intake = intakeLead(store, G, runId, VALID_LEAD);
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+
+  handleCallWebhook(store, {
+    call_id: 'call_pending',
+    lead_id: intake.lead.leadId,
+    connected: true,
+    qualified: true,
+    appointment_booked: true,
+    sale_status: 'pending',
+    expected_value: 5000,
+  });
+  assert.equal(store.listAudit(runId, { kind: 'revenue.recorded' }).length, 0, 'a forecast is not revenue');
+  store.close();
+});

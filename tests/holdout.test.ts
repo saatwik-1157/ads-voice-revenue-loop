@@ -142,3 +142,23 @@ test('apply refuses to pause an ad the scale plan is holding open, and says so i
   assert.match(refusal.detail, /reserved/);
   store.close();
 });
+
+test('pausing an ad is audited, not just the refusal to pause one', async () => {
+  // The refusal was audited from the start; the action itself was not, so a
+  // real change to the ad account left no trace.
+  const store = new Store(':memory:');
+  const runId = store.createRun('test');
+  for (const adId of ['winner', 'dead']) {
+    store.saveAd({ adId, campaignId: 'c1', adsetId: 's1', creativeId: `cr_${adId}`, status: 'ACTIVE', createdAt: '' });
+  }
+  const rec = recFor([
+    { adId: 'winner', decision: 'SCALE' },
+    { adId: 'dead', decision: 'KILL' },
+  ]);
+  await pauseKilledAds(ctxFor(store), runId, rec, planScale(G, 100000, 'SCALE', rec.perAd));
+
+  const paused = store.listAudit(runId, { kind: 'ad.paused' });
+  assert.equal(paused.length, 1);
+  assert.match(paused[0]!.detail, /dead/, 'names which creative was stopped');
+  store.close();
+});

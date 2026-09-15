@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { isSupportedCurrency } from '../core/util.ts';
 import {
   classifyText,
   DEFAULT_EXCLUSION_RULES,
@@ -190,6 +191,16 @@ export function validate(g: Guardrails): void {
   list('excludedNiches', g.excludedNiches);
   list('bannedClaimPatterns', g.bannedClaimPatterns);
   text('currency', g.currency);
+  // Every amount here is an integer of 1/100 of a major unit, and Meta takes
+  // budgets in the account currency's own smallest unit. On a yen account,
+  // where that unit is 1, a budget this system means as "1,000.00" goes out as
+  // 100000 and buys a 100,000 yen/day campaign. Refusing is a stated
+  // limitation; the alternative is a silent 100x.
+  if (typeof g.currency === 'string' && g.currency.trim() && !isSupportedCurrency(g.currency)) {
+    problems.push(
+      `currency ${JSON.stringify(g.currency)} is not supported: this system stores amounts as 1/100 of a major unit, and ${g.currency} does not divide that way (or is not a currency code)`,
+    );
+  }
   flag('specialAdCategoriesAllowed', g.specialAdCategoriesAllowed);
   flag('requireExplicitConsent', g.requireExplicitConsent);
 

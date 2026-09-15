@@ -5,6 +5,7 @@ import { defaultGuardrails, isWithinCallWindow, nextTimeInsideCallWindow } from 
 import { fromMetaLeadgen, intakeLead } from '../src/pipeline/intake.ts';
 import { dispatchLead } from '../src/pipeline/dispatch.ts';
 import { handleCallWebhook, verifySignature, verifyToken } from '../src/pipeline/webhooks.ts';
+import { economicsForRun } from '../src/economics/metrics.ts';
 import { MockVoiceProvider } from '../src/voice/mock.ts';
 import { generateBrief } from '../src/brief/generator.ts';
 import { checkClaims, checkPromiseAlignment, offersOptOut } from '../src/brief/claims.ts';
@@ -380,5 +381,112 @@ test('the attempt cap counts the person, not the lead row', async () => {
 
   assert.equal(placed, cap.maxCallAttemptsPerLead, 'the person is called twice in total, not twice per form');
   assert.equal(store.callCountForPhone(runId, viaAdA.lead.phoneE164), 2);
+  store.close();
+});
+
+test('a redelivered webhook with no call_id is still handled once', async () => {
+  // callId fell back to a fresh random id when the provider sent none, which
+  // turned off the idempotency guarantee documented directly above it: three
+  // deliveries of one payload wrote three call rows and three revenue.recorded
+  // entries. Revenue survived only because it is keyed per lead, and the funnel
+  // counts only because they count distinct leads - two unrelated details were
+  // carrying a guarantee that had quietly stopped existing.
+  const store = freshStore();
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const intake = intakeLead(store, G, runId, VALID_LEAD);
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+
+  const payload = {
+    lead_id: intake.lead.leadId,
+    connected: true,
+    qualified: true,
+    sale_status: 'won',
+    expected_value: 5000,
+  };
+  handleCallWebhook(store, payload);
+  handleCallWebhook(store, payload);
+  handleCallWebhook(store, payload);
+
+  assert.equal(store.callCountForLead(intake.lead.leadId), 1, 'one call, one row');
+  assert.equal(store.listAudit(runId, { kind: 'revenue.recorded' }).length, 1, 'and one revenue entry');
+  store.close();
+});
+
+test('two genuinely different outcomes for one lead are still two calls', async () => {
+  // The fallback key must dedupe redelivery without collapsing a real second
+  // attempt that went differently.
+  const store = freshStore();
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const intake = intakeLead(store, G, runId, VALID_LEAD);
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+
+  handleCallWebhook(store, { lead_id: intake.lead.leadId, connected: false });
+  handleCallWebhook(store, { lead_id: intake.lead.leadId, connected: true, qualified: true });
+  assert.equal(store.callCountForLead(intake.lead.leadId), 2);
+  store.close();
+});
+
+test('a value that is not an amount cannot become revenue, and does not lose the call', async () => {
+  const store = freshStore();
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+
+  const cases: Array<[string, unknown]> = [
+    ['infinity', Number.POSITIVE_INFINITY],
+    ['not a number', 'abc'],
+    ['negative', -5000],
+    ['an object', { amount: 5000 }],
+  ];
+  for (const [i, [label, value]] of cases.entries()) {
+    const intake = intakeLead(store, G, runId, { ...VALID_LEAD, phone: `9${String(700000001 + i * 977)}` });
+    assert.equal(intake.status, 'accepted', `${label}: setup`);
+    if (intake.status !== 'accepted') continue;
+    const result = handleCallWebhook(store, {
+      call_id: `c_${label}`,
+      lead_id: intake.lead.leadId,
+      connected: true,
+      qualified: true,
+      sale_status: 'won',
+      expected_value: value as number,
+    });
+
+    // 1e999 is Infinity, which is >= every ROAS target there is: one payload
+    // used to be enough to make the engine SCALE on infinite return.
+    assert.equal(result.status, 'recorded', `${label}: the call happened and is worth keeping`);
+    if (result.status === 'recorded') {
+      assert.equal(result.outcome.expectedValueMinor, 0, `${label} must not become money`);
+      assert.equal(result.outcome.connected, true, `${label}: the funnel data survives`);
+    }
+  }
+
+  const e = economicsForRun(store, runId);
+  assert.equal(e.revenueMinor, 0, 'none of it reached the ledger');
+  assert.ok(Number.isFinite(e.roas ?? 0), 'and ROAS stayed a number');
+  assert.equal(store.listAudit(runId, { kind: 'revenue.unusable_value' }).length, cases.length, 'each refusal is findable');
+  store.close();
+});
+
+test('an ordinary sale still records revenue', async () => {
+  const store = freshStore();
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const intake = intakeLead(store, G, runId, VALID_LEAD);
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+
+  handleCallWebhook(store, {
+    call_id: 'c_ok',
+    lead_id: intake.lead.leadId,
+    connected: true,
+    qualified: true,
+    sale_status: 'won',
+    expected_value: 5000,
+  });
+  assert.equal(economicsForRun(store, runId).revenueMinor, 500000, 'the guards refuse junk, not sales');
   store.close();
 });

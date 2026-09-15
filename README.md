@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 218 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 222 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -411,9 +411,12 @@ These are enforced in code, not just documented:
   embedded in creative or sent to a browser.
 - **Revenue means revenue.** An expected value on a *pending* appointment is a forecast and does not
   move ROAS. Only `sale_status: "won"` (or an external payment event via `POST /revenue`) counts, and
-  the amount has to be a whole, non-negative number of minor units before it reaches the ledger. It
-  is the figure every KEEP/KILL/SCALE decision is made from, so a poisoned one does not throw — it
-  quietly scales a campaign that is losing money.
+  the amount has to be a finite, non-negative number before it reaches the ledger — on both routes in.
+  It is the figure every KEEP/KILL/SCALE decision is made from, so a poisoned one does not throw: JSON
+  `1e999` parses to Infinity, which is greater than every ROAS target there is, so one malformed
+  payload was enough to make the engine SCALE on infinite return. A bad amount is now zero and
+  audited as `revenue.unusable_value` rather than discarding the call — the call really happened, and
+  whether it connected and qualified is worth keeping.
 - **A refusal is not a crash, and a crash is not a refusal.** A guardrail stopping a publish, a
   malformed config, an unusable image, a database another process is mid-write on — these are the
   system working, and they print what happened and what to do about it. Stack traces are reserved
@@ -505,6 +508,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         218 tests, run by `npm test` and on every push
+tests/         222 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

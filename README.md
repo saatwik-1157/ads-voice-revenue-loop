@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 214 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 218 tests: guardrails, the loop, retries, scheduling, creative, hostile input
 ```
 
 ### Credentials
@@ -112,6 +112,13 @@ node src/cli.ts preflight [--lead-form ID]          # read-only checks on the re
 
 Money is passed to the CLI in major units (`--budget 700` = ₹700/day) and stored in minor units
 everywhere internally, so there is no floating-point drift in the economics.
+
+Those minor units are 1/100 of a major unit, everywhere. Meta takes budgets in the account currency's
+own smallest unit, and that is not always 1/100 — the yen has no minor unit, the Kuwaiti dinar has
+three decimals — so on a JPY account a budget this system means as ¥1,000.00 would be sent as
+`100000` and buy a ¥100,000/day campaign. The control layer refuses a currency where the assumption
+does not hold, and `preflight` reports it against the real account. A stated limitation beats a
+silent factor of 100.
 
 ### Driving the loop by hand
 
@@ -498,6 +505,6 @@ src/
   demo/        the 48-hour MVP in one command
 
 docs/          setup guides for the two external accounts
-tests/         214 tests, run by `npm test` and on every push
+tests/         218 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 ```

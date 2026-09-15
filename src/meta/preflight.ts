@@ -2,6 +2,7 @@ import type { Env } from '../config/env.ts';
 import type { Guardrails } from '../config/guardrails.ts';
 import { MetaApiProvider } from './api.ts';
 import { MetaApiError } from './provider.ts';
+import { isSupportedCurrency } from '../core/util.ts';
 
 /**
  * Read-only checks against a real ad account, before anything is published.
@@ -172,6 +173,18 @@ export async function preflight(options: PreflightOptions): Promise<PreflightRes
       status: 'pass',
       detail: `${account.name ?? account.accountId} (${account.accountId}), timezone ${account.timezone ?? 'unknown'}`,
     });
+
+    // Checked before the match, because "they disagree" is the wrong reason to
+    // give someone whose account currency this system cannot represent at all.
+    if (!isSupportedCurrency(account.currency)) {
+      add({
+        check: 'currency',
+        status: 'fail',
+        detail: `this account bills in ${account.currency}, which is not 1/100 of a major unit`,
+        fix: `Every amount here is an integer of 1/100, and Meta takes budgets in the account currency's smallest unit - so on a ${account.currency} account a budget meant as 1,000.00 would be sent as 100000. Use an account in a currency like INR, USD or EUR.`,
+      });
+      return { findings, passed: false };
+    }
 
     const matches = account.currency.toUpperCase() === g.currency.toUpperCase();
     add({

@@ -110,12 +110,15 @@ export function isRealKey(value: string): boolean {
 
 /** Fail fast rather than half-publishing a campaign with missing credentials. */
 export function assertLiveCredentials(e: Env): void {
+  // isRealKey rather than a non-empty check: someone copying .env.example and
+  // flipping FL_MODE=live otherwise gets past this guard on placeholder values
+  // and finds out at the first API call instead of here.
   const missing: string[] = [];
-  if (!e.meta.accessToken) missing.push('META_ACCESS_TOKEN');
-  if (!e.meta.adAccountId || e.meta.adAccountId === 'act_000000000000') missing.push('META_AD_ACCOUNT_ID');
-  if (!e.meta.pageId) missing.push('META_PAGE_ID');
-  if (!e.omni.apiKey) missing.push('OMNI_API_KEY');
-  if (!e.omni.agentId) missing.push('OMNI_AGENT_ID');
+  if (!isRealKey(e.meta.accessToken)) missing.push('META_ACCESS_TOKEN');
+  if (!isRealKey(e.meta.adAccountId) || e.meta.adAccountId === 'act_000000000000') missing.push('META_AD_ACCOUNT_ID');
+  if (!isRealKey(e.meta.pageId)) missing.push('META_PAGE_ID');
+  if (!isRealKey(e.omni.apiKey)) missing.push('OMNI_API_KEY');
+  if (!isRealKey(e.omni.agentId)) missing.push('OMNI_AGENT_ID');
   if (missing.length) {
     throw new Error(`FL_MODE=live requires: ${missing.join(', ')}. Fill them in .env or stay in mock mode.`);
   }

@@ -275,3 +275,35 @@ test('secrets never reach the error message of a failed call', async () => {
     },
   );
 });
+
+test('insights turn Meta spend into minor units, and refuse what is not a number', async () => {
+  const rows = (body: unknown) =>
+    (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+  const client = (fetchImpl: typeof fetch) =>
+    new MetaApiProvider({ accessToken: 't', adAccountId: 'act_1', apiVersion: 'v21.0', fetchImpl, retry: { attempts: 1 } });
+
+  const ok = await client(
+    rows({ data: [{ spend: '12.34', impressions: '5000', clicks: '60', actions: [{ action_type: 'lead', value: '7' }] }] }),
+  ).insights(['ad_1']);
+  assert.deepEqual(ok[0], { adId: 'ad_1', spendMinor: 1234, impressions: 5000, clicks: 60, leads: 7 });
+
+  // An ad with no delivery yet returns no row at all; that is a real zero.
+  const empty = await client(rows({ data: [] })).insights(['ad_1']);
+  assert.equal(empty[0]?.spendMinor, 0);
+
+  // A missing field is zero. A malformed one is not: Number(undefined) is NaN,
+  // and NaN is not zero - it is a value every comparison is false against, so
+  // one bad insights row would have turned CPL, ROAS and the stop-loss into
+  // NaN and made every threshold in the decision engine read as unmet.
+  const partial = await client(rows({ data: [{ impressions: '10' }] })).insights(['ad_1']);
+  assert.deepEqual(partial[0], { adId: 'ad_1', spendMinor: 0, impressions: 10, clicks: 0, leads: 0 });
+
+  for (const bad of [{ spend: 'n/a' }, { spend: '-5' }, { impressions: 'lots' }]) {
+    await assert.rejects(client(rows({ data: [bad] })).insights(['ad_1']), /refusing to treat that as a number/);
+  }
+
+  // Actions is not always an array in the wild; an unexpected shape must not
+  // throw a TypeError out of a sync that is otherwise fine.
+  const weird = await client(rows({ data: [{ spend: '1.00', actions: 'none' }] })).insights(['ad_1']);
+  assert.equal(weird[0]?.leads, 0);
+});

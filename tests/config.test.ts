@@ -185,3 +185,16 @@ test('spend to date has to be a real number before it is compared to the stop-lo
     GuardrailViolation,
   );
 });
+
+test('a currency this system cannot represent is refused by the control layer', () => {
+  // Every amount is an integer of 1/100 of a major unit, and Meta takes budgets
+  // in the account currency's own smallest unit. On a yen account those are not
+  // the same thing, and the gap is a factor of 100.
+  for (const currency of ['JPY', 'KRW', 'VND', 'KWD', 'BHD']) {
+    rejects(withField('currency', currency), 'not supported');
+  }
+  rejects(withField('currency', 'NOTACURRENCY'), 'not supported');
+  for (const currency of ['INR', 'USD', 'EUR', 'GBP', 'AUD']) {
+    validate(withField('currency', currency));
+  }
+});

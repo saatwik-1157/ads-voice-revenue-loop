@@ -104,6 +104,36 @@ function plausible(digits: string, raw: string): string {
   return `+${digits}`;
 }
 
+/**
+ * How many minor units make one of a currency, per the runtime's own ISO data.
+ *
+ * Not every currency is 100. JPY, KRW and VND have no minor unit at all (1),
+ * KWD and BHD have 1000. That matters here because Meta takes budgets in the
+ * account currency's smallest unit: this system stores minor units assuming
+ * 100, so on a yen account a budget it means as "1,000.00" is sent as 100000
+ * and buys a 100,000 yen/day campaign.
+ *
+ * Throws on a code the runtime does not recognise, which is the validation.
+ */
+export function minorUnitsPer(currency: string): number {
+  const digits = new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2;
+  return 10 ** digits;
+}
+
+/**
+ * Every amount in this system is an integer of 1/100 of a major unit, and the
+ * conversions, the CLI and the money formatter all assume it. Rather than
+ * silently misprice an account whose currency does not work that way, the
+ * control layer refuses it - a stated limitation instead of a 100x surprise.
+ */
+export function isSupportedCurrency(currency: string): boolean {
+  try {
+    return minorUnitsPer(currency) === 100;
+  } catch {
+    return false;
+  }
+}
+
 export function minor(amount: number): number {
   return Math.round(amount * 100);
 }

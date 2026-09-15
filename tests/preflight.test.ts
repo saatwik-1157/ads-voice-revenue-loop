@@ -195,3 +195,24 @@ test('publishing refuses outright when the account currency disagrees', async ()
   );
   store.close();
 });
+
+test('an account whose currency is not 1/100 of a major unit is refused', async () => {
+  // Meta takes budgets in the account currency's smallest unit. For JPY that
+  // unit is 1 yen, so a budget this system means as 1,000.00 goes out as
+  // 100000 and buys a 100,000 yen/day campaign. Refusing is a stated limit;
+  // the alternative is a silent 100x.
+  const result = await preflight({
+    env: ENV,
+    guardrails: { ...G, currency: 'INR' },
+    fetchImpl: graph({
+      debug_token: GOOD_TOKEN,
+      act_123: { name: 'Tokyo Ads', currency: 'JPY', account_status: 1 },
+      page_1: { name: 'Page', id: 'page_1' },
+    }),
+  });
+  const currency = find(result.findings, 'currency');
+  assert.equal(currency.status, 'fail');
+  assert.match(currency.detail, /JPY/);
+  assert.match(currency.fix ?? '', /100000/, 'it shows what would actually be sent');
+  assert.equal(result.passed, false);
+});

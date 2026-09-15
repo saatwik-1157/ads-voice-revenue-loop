@@ -290,17 +290,39 @@ export class MetaApiProvider implements MetaProvider {
         out.push({ adId, spendMinor: 0, impressions: 0, clicks: 0, leads: 0 });
         continue;
       }
-      const actions = (row.actions as Array<{ action_type: string; value: string }> | undefined) ?? [];
-      const leadAction = actions.find((a) => a.action_type === 'lead' || a.action_type === 'onsite_conversion.lead_grouped');
+      const rawActions = row.actions;
+      const actions = Array.isArray(rawActions) ? (rawActions as Array<{ action_type?: string; value?: unknown }>) : [];
+      const leadAction = actions.find(
+        (a) => a?.action_type === 'lead' || a?.action_type === 'onsite_conversion.lead_grouped',
+      );
       out.push({
         adId,
-        // Meta reports spend as a decimal string in the account currency.
-        spendMinor: Math.round(Number(row.spend ?? 0) * 100),
-        impressions: Number(row.impressions ?? 0),
-        clicks: Number(row.clicks ?? 0),
-        leads: Number(leadAction?.value ?? 0),
+        // Meta reports spend as a decimal string in the account currency. The
+        // account is verified to be a 1/100 currency before anything publishes.
+        spendMinor: Math.round(count(row.spend, `spend for ${adId}`) * 100),
+        impressions: count(row.impressions, `impressions for ${adId}`),
+        clicks: count(row.clicks, `clicks for ${adId}`),
+        leads: count(leadAction?.value, `lead actions for ${adId}`),
       });
     }
     return out;
   }
+}
+
+/**
+ * A number from an API response, or a refusal.
+ *
+ * `Number(undefined)` is NaN, and NaN spent a happy life downstream: it is not
+ * zero, every comparison against it is false, and Math.round keeps it. One
+ * missing field in one insights row would have turned CPL, ROAS and the
+ * stop-loss into NaN and made every threshold in the decision engine read as
+ * unmet. An absent field is zero; a malformed one is an error.
+ */
+function count(value: unknown, what: string): number {
+  if (value === undefined || value === null || value === '') return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new MetaApiError(0, `Meta returned ${JSON.stringify(value)} for ${what}; refusing to treat that as a number`);
+  }
+  return n;
 }

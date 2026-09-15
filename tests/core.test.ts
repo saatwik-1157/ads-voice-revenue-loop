@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { maskPhone, PhoneError, redact, toE164 } from '../src/core/util.ts';
+import { isSupportedCurrency, maskPhone, minorUnitsPer, PhoneError, redact, toE164 } from '../src/core/util.ts';
 import {
   assertBudgetWithinCaps,
   assertGeoAllowed,
@@ -126,4 +126,14 @@ test('the budget cap rejects the values that slip past a naive comparison', () =
 
   assert.doesNotThrow(() => assertBudgetWithinCaps(g, 1000, 0), 'an ordinary budget still passes');
   assert.doesNotThrow(() => assertBudgetWithinCaps(g, g.maxDailySpendMinor, 0), 'exactly at the cap is allowed');
+});
+
+test('minorUnitsPer reports what a currency actually divides into', () => {
+  assert.equal(minorUnitsPer('INR'), 100);
+  assert.equal(minorUnitsPer('USD'), 100);
+  assert.equal(minorUnitsPer('JPY'), 1, 'the yen has no minor unit');
+  assert.equal(minorUnitsPer('KWD'), 1000, 'the dinar has three decimals');
+  assert.equal(isSupportedCurrency('INR'), true);
+  assert.equal(isSupportedCurrency('JPY'), false);
+  assert.equal(isSupportedCurrency('nonsense'), false, 'an unknown code is not quietly treated as 100');
 });

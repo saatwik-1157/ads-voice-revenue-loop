@@ -137,3 +137,30 @@ test('minorUnitsPer reports what a currency actually divides into', () => {
   assert.equal(isSupportedCurrency('JPY'), false);
   assert.equal(isSupportedCurrency('nonsense'), false, 'an unknown code is not quietly treated as 100');
 });
+
+test('the test budget is a total, so the projection spans the whole window', () => {
+  // Found by running the demo: the check compared ONE day against the total, so
+  // `publish --budget 300 --days 30` set up a 9,000 campaign under a 1,500 test
+  // budget - while gate #1 showed the approver "test cap INR 1500.00" as though
+  // it bound the run.
+  const g = { ...defaultGuardrails, maxDailySpendMinor: 30000, maxTestBudgetMinor: 150000 };
+
+  assert.doesNotThrow(() => assertBudgetWithinCaps(g, 30000, 0, 5), '300/day x 5 days is exactly the cap');
+  assert.throws(() => assertBudgetWithinCaps(g, 30000, 0, 6), /test_budget/, 'one day more is over it');
+  assert.throws(
+    () => assertBudgetWithinCaps(g, 30000, 0, 30),
+    (err: Error) => /test_budget/.test(err.message) && /30 days/.test(err.message),
+    'and it names the arithmetic',
+  );
+
+  // Spend already on the clock counts against the same total.
+  assert.throws(() => assertBudgetWithinCaps(g, 30000, 100000, 3), /test_budget/);
+
+  // A mid-flight raise does not know the remaining window, so it gets the
+  // single-day check - the most that can honestly be said at that point.
+  assert.doesNotThrow(() => assertBudgetWithinCaps(g, 30000, 0));
+  assert.throws(() => assertBudgetWithinCaps(g, 30000, 130000), /test_budget/);
+
+  assert.throws(() => assertBudgetWithinCaps(g, 30000, 0, 0), /window/, 'a zero-day window is not a campaign');
+  assert.throws(() => assertBudgetWithinCaps(g, 30000, 0, Number.NaN), /window/);
+});

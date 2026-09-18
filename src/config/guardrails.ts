@@ -308,7 +308,16 @@ export function assertObjectiveAllowed(g: Guardrails, objective: string): void {
   }
 }
 
-export function assertBudgetWithinCaps(g: Guardrails, dailyBudgetMinor: number, spentSoFarMinor: number): void {
+/**
+ * @param windowDays how many days the budget will run for, when that is known.
+ *   Publishing knows it; a mid-flight budget raise does not, and passes nothing.
+ */
+export function assertBudgetWithinCaps(
+  g: Guardrails,
+  dailyBudgetMinor: number,
+  spentSoFarMinor: number,
+  windowDays?: number,
+): void {
   // Every comparison against NaN is false, so an unchecked NaN passes each cap
   // below and reaches Meta as `daily_budget: "NaN"`. A negative budget passes
   // for the same reason. A cap that waves those through is not a cap.
@@ -324,10 +333,22 @@ export function assertBudgetWithinCaps(g: Guardrails, dailyBudgetMinor: number, 
   if (dailyBudgetMinor > g.maxDailySpendMinor) {
     throw new GuardrailViolation('daily_cap', `daily budget ${dailyBudgetMinor} exceeds cap ${g.maxDailySpendMinor}`);
   }
-  if (spentSoFarMinor + dailyBudgetMinor > g.maxTestBudgetMinor) {
+  // The test budget is a total, so the projection has to span the whole window.
+  // Checking one day against it meant `publish --budget 300 --days 30` sailed
+  // through a 1,500 test budget and set up a 9,000 campaign - while gate #1
+  // showed the approver "test cap INR 1500.00" as though it bound the run.
+  // Days are only known at publish; a mid-flight raise passes nothing and gets
+  // the single-day check, which is the most that can be said at that point.
+  const days = windowDays === undefined ? 1 : windowDays;
+  if (!Number.isFinite(days) || days < 1) {
+    throw new GuardrailViolation('window', `campaign window must be at least one day, got ${String(windowDays)}`);
+  }
+  const projected = spentSoFarMinor + dailyBudgetMinor * days;
+  if (projected > g.maxTestBudgetMinor) {
+    const over = days > 1 ? ` (${dailyBudgetMinor} x ${days} days)` : '';
     throw new GuardrailViolation(
       'test_budget',
-      `projected spend ${spentSoFarMinor + dailyBudgetMinor} exceeds test budget ${g.maxTestBudgetMinor}`,
+      `projected spend ${projected}${over} exceeds test budget ${g.maxTestBudgetMinor}`,
     );
   }
 }

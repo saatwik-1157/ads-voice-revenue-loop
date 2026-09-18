@@ -69,7 +69,10 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
   say(`  artwork ready for ${assetOutcomes.length} creative(s) via the ${ctx.assets.kind} provider`);
   if (ctx.env.previewDir) say(`  previews in ${ctx.env.previewDir}/${runId}`);
 
-  const dailyBudgetMinor = Math.min(g.maxDailySpendMinor, Math.round(g.maxTestBudgetMinor / days));
+  // Floor, not round: dividing a total across days and rounding up overshoots
+  // the total by up to one minor unit per day, which the test-budget cap then
+  // correctly refuses. 1,500 over 7 days rounds to 21429 and projects 150003.
+  const dailyBudgetMinor = Math.min(g.maxDailySpendMinor, Math.floor(g.maxTestBudgetMinor / days));
   const gate1 = requestGate1(store, g, runId, brief, dailyBudgetMinor, reviewFlags);
   if (claimIssues.length || promiseDrift.length || gate1.blocking.length) {
     say('  BLOCKED - the brief has issues a human must not be asked to wave through:');

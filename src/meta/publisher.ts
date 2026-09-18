@@ -98,7 +98,7 @@ export async function publishCampaign(
   assertObjectiveAllowed(g, objective);
   assertGeoAllowed(g, g.allowedGeos);
   assertNicheAllowed(g, brief.niche.name);
-  assertBudgetWithinCaps(g, options.dailyBudgetMinor, store.totalSpendMinor(runId));
+  assertBudgetWithinCaps(g, options.dailyBudgetMinor, store.totalSpendMinor(runId), options.windowDays);
 
   if (!g.specialAdCategoriesAllowed) {
     // Special ad categories (credit, employment, housing, social issues) carry

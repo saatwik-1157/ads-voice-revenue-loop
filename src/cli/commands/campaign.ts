@@ -8,7 +8,8 @@ import type { MockMetaProvider } from '../../meta/mock.ts';
 
 /** The default test budget: a third of the cap, so a run has three days in it. */
 function defaultDailyBudget(ctx: { guardrails: { maxDailySpendMinor: number; maxTestBudgetMinor: number } }): number {
-  return Math.min(ctx.guardrails.maxDailySpendMinor, Math.round(ctx.guardrails.maxTestBudgetMinor / 3));
+  // Floor: a share of a total must never round up past it.
+  return Math.min(ctx.guardrails.maxDailySpendMinor, Math.floor(ctx.guardrails.maxTestBudgetMinor / 3));
 }
 
 export const campaignCommands: Command[] = [

@@ -52,7 +52,8 @@ export const lifecycleCommands: Command[] = [
       }
       writeRaw('\n');
 
-      const budget = Math.min(ctx.guardrails.maxDailySpendMinor, Math.round(ctx.guardrails.maxTestBudgetMinor / 3));
+      // Floor: a share of a total must never round up past it.
+      const budget = Math.min(ctx.guardrails.maxDailySpendMinor, Math.floor(ctx.guardrails.maxTestBudgetMinor / 3));
       const gate = requestGate1(ctx.store, ctx.guardrails, runId, result.brief, budget, result.reviewFlags);
       write(`GATE #1 requested: ${gate.approvalId}\n${gate.summary}`);
       if (gate.blocking.length) {

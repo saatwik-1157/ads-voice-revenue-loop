@@ -152,23 +152,36 @@ cannot sign a body. All of them fail closed when nothing is configured.
 Nothing spends, publishes or dials without clearing `config/guardrails.json` first. The agent can
 propose changes to it; only a person editing the file can widen it.
 
+The values in the repo are sized for a **first live test** — small enough that the whole experiment
+is bounded at five days of spend:
+
 ```json
 {
   "allowedGeos": ["IN"],
-  "maxDailySpendMinor": 100000,
-  "maxTestBudgetMinor": 500000,
-  "stopLossMinor": 300000,
-  "budgetApprovalThresholdMinor": 200000,
-  "evaluationIntervalHours": 24,
-  "minHoursBetweenBudgetRaises": 24,
+  "currency": "INR",
+  "maxDailySpendMinor": 30000,
+  "maxTestBudgetMinor": 150000,
+  "stopLossMinor": 100000,
+  "budgetApprovalThresholdMinor": 30000,
+  "maxBudgetStepFactor": 1.2,
+  "maxCreativeVariants": 2,
+  "minLeadsBeforeDecision": 10,
+  "minSpendBeforeKillMinor": 30000,
+  "maxCallAttemptsPerLead": 1,
+  "maxCallsPerDay": 25,
   "callWindow": { "startHour": 10, "endHour": 19, "timeZone": "Asia/Kolkata" }
 }
 ```
 
+Setting `budgetApprovalThresholdMinor` equal to the starting daily budget is what makes this a
+*watched* test: a raise is by definition above the current budget, so every proposed increase trips
+gate #2. The agent can still pause weak creatives unattended, which only ever saves money.
+
 What that buys you, concretely:
 
 - **The agent cannot publish at all** until gate #1 is approved — `publishCampaign` throws.
-- **The agent cannot raise budget** past `maxBudgetStepFactor` (1.3×) or past
+- **The agent cannot raise budget** past `maxBudgetStepFactor` (1.3× by default, 1.2× in the
+  shipped config) or past
   `budgetApprovalThresholdMinor` without gate #2. Proven profitability moves it inside the step; it
   never moves it past the threshold.
 - **The stop-loss outranks every other signal.** Once net loss reaches it, the only recommendation
@@ -237,6 +250,13 @@ fault by generating more creative:
 Each creative is judged separately, but only after it has had a fair share of spend — otherwise the
 engine just kills whichever ad the auction happened to starve.
 
+**How many creatives you test is a budget decision, not a creative one.** Every ad in an ad set
+shares the budget, so `maxCreativeVariants` divides the daily spend and decides whether the per-ad
+numbers mean anything at all. Six variants on ₹300/day is ₹50 each, which at a ₹77 target CPL is
+under one lead per creative per day — and the engine will still issue confident per-ad verdicts on
+that. `validate()` refuses a combination leaving under ₹50 per variant per day and names the
+arithmetic. Rough rule: daily budget ÷ variants should buy several leads per variant per day.
+
 **Every stage counts leads, not call rows.** `maxCallAttemptsPerLead` is 2 by default, so a lead can
 have more than one call, and joining leads to calls yields a row per attempt. Counting those rows
 meant a second attempt doubled the lead count — halving CPL and halving the connect rate at the same
@@ -263,7 +283,7 @@ the run level. The invariant to watch: per-ad leads plus unattributed leads equa
 Every ad in one ad set shares a budget, so "reserve 20% for testing" and "do not pause everything
 except the winner" are the same statement. `planScale` treats them that way:
 
-- The step is `maxBudgetStepFactor` (1.3×), capped at `maxDailySpendMinor`, and split into a proven
+- The step is `maxBudgetStepFactor` (1.3× by default), capped at `maxDailySpendMinor`, and split into a proven
   share and a holdout share — reported, audited, and shown on the CLI:
   `budget raised to INR 650.00/day (INR 520.00 proven + INR 130.00 holdout across 5 test creative(s))`
 - The holdout is drawn from the creatives still being tested (`KEEP`/`ITERATE`). `apply` refuses to
@@ -426,8 +446,11 @@ These are enforced in code, not just documented:
 
 ## Going live
 
-1. Fill in `.env` from `.env.example` and set `FL_MODE=live`. The process refuses to start with
-   incomplete credentials rather than half-publishing a campaign.
+1. Fill in the `META_*` values in `.env` from `.env.example`, and **leave `FL_MODE=mock`** for now.
+   `.env` is read regardless of mode, so the next step works with real credentials while no code
+   path exists that could construct a live publisher. Switch to `FL_MODE=live` at step 5, once the
+   checks pass; the process then refuses to start on incomplete credentials rather than
+   half-publishing a campaign.
 2. **Run `node src/cli.ts preflight` before anything else.** Every call it makes is a GET — it creates
    nothing and spends nothing — and it answers the questions that are otherwise answered at the worst
    possible moment: is the token valid and when does it expire, does it hold `leads_retrieval`
@@ -482,8 +505,9 @@ which half is our contract (the post-call webhook) and which half is a guess at 
   written against a tight spec that gets checked locally regardless, so it does not need the top of
   the range; `FL_BRIEF_MODEL` changes it.
 - **The offline writer gives every variant the same headline and body.** Only the hook and the
-  palette differ, so six generated creatives are a thin creative test on their own. Real artwork in
-  `assets/`, or a model-written brief, is what makes the six worth testing against each other.
+  palette differ, so generated creatives are a thin creative test on their own — they differ by one
+  line, not by concept. Real artwork in `assets/`, or a model-written brief, is what makes variants
+  worth testing against each other. `maxCreativeVariants` controls how many are produced.
 
 ## Layout
 

@@ -446,39 +446,89 @@ These are enforced in code, not just documented:
 
 ## Going live
 
-1. Fill in the `META_*` values in `.env` from `.env.example`, and **leave `FL_MODE=mock`** for now.
-   `.env` is read regardless of mode, so the next step works with real credentials while no code
-   path exists that could construct a live publisher. Switch to `FL_MODE=live` at step 5, once the
-   checks pass; the process then refuses to start on incomplete credentials rather than
-   half-publishing a campaign.
-2. **Run `node src/cli.ts preflight` before anything else.** Every call it makes is a GET — it creates
-   nothing and spends nothing — and it answers the questions that are otherwise answered at the worst
-   possible moment: is the token valid and when does it expire, does it hold `leads_retrieval`
-   (without it, you find out when your first real lead arrives and its answers cannot be fetched), is
-   the ad account active, does the instant form actually ask for a phone number, and **does the
-   account bill in the same currency the control layer is written in**. That last one is the
-   expensive one: budgets go to Meta as an integer of the *account's* minor units while every cap
-   here is in the guardrails' currency, so an INR control layer against a USD account turns a
-   ₹1,000/day cap into a $1,000/day campaign, with the stop-loss and CPL target denominated wrong at
-   the same time. `publish` refuses on a mismatch; `preflight` tells you before you get that far and
-   names the line to change. Add `--lead-form ID` to check the form too.
-3. Create the Meta instant form on your Page and pass its id with `--lead-form` — the full walkthrough,
-   including the `leads_retrieval` permission and Lead Access grant that leads silently depend on, is
-   in [docs/meta-instant-form.md](docs/meta-instant-form.md). Artwork is handled for you — drop
-   cleared files in `assets/` or let the generated fallback produce them; either way `brief` uploads
-   them and publishing a creative without an `image_hash` is refused.
-4. Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `FL_ADMIN_TOKEN`, and either
-   `OMNI_WEBHOOK_SECRET` (HMAC, preferred) or `OMNI_WEBHOOK_TOKEN` (static header, weaker).
-   Expose the server (`node src/cli.ts serve`) at a public HTTPS URL and point both webhooks at it:
-   - `POST /webhooks/meta` — leadgen (verify subscription at `GET /webhooks/meta`)
-   - `POST /webhooks/omnidimension` — post-call results
-5. Publish **paused** first (`publish` without `--activate`), look at it in Ads Manager, then
-   activate.
+Ordered so that each step is cheap and the expensive ones come last. Nothing before step 6 spends
+anything.
 
-Confirm your OmniDimension agent's dispatch endpoint and post-call payload field names against
-**[docs/omnidimension.md](docs/omnidimension.md)** — it covers both directions, and is explicit about
-which half is our contract (the post-call webhook) and which half is a guess at someone else's API
-(the dispatch call).
+**1. Credentials, still in mock mode.** Fill the `META_*` values in `.env` from `.env.example` and
+leave `FL_MODE=mock`. `.env` is read regardless of mode, so the checks below run against real
+credentials while no code path exists that could construct a live publisher.
+
+**2. Check the account.** Every call is a GET — it creates nothing and spends nothing:
+
+```bash
+node src/cli.ts preflight
+```
+
+It answers the questions that are otherwise answered at the worst possible moment: is the token
+valid and when does it expire, does it hold `leads_retrieval` (without it you find out when your
+first real lead arrives and its answers cannot be fetched), is the ad account active, and **does the
+account bill in the same currency the control layer is written in**. That last one is the expensive
+one: budgets go to Meta as an integer of the *account's* minor units while every cap here is in the
+guardrails' currency, so an INR control layer against a USD account turns a ₹1,000/day cap into a
+$1,000/day campaign, with the stop-loss and CPL target denominated wrong at the same time. `publish`
+refuses on a mismatch; `preflight` tells you first and names the line to change.
+
+**3. Create the instant form, then check it too.** The full walkthrough — including the
+`leads_retrieval` permission and the Lead Access grant that leads silently depend on — is in
+[docs/meta-instant-form.md](docs/meta-instant-form.md). Then re-run preflight against it:
+
+```bash
+node src/cli.ts preflight --lead-form <formId>
+```
+
+A form with no phone question is a voice funnel with nothing to dial, and intake refuses every lead
+that arrives without one.
+
+**4. Settle the voice contract before it costs anything.** The post-call webhook is our contract and
+is covered by tests; the dispatch call is an educated guess at someone else's API and is the
+least-verified thing in this repo. Dry run first — nothing leaves the machine — then one real call
+to **your own** number:
+
+```bash
+node src/cli.ts contract-test                                   # prints the exact request, sends nothing
+node src/cli.ts contract-test --live --to +919876543210 --yes   # one call, to you
+```
+
+Reconcile the printed request against their API console before the live flag. Finding out here costs
+a phone call; finding out later means paying for leads nobody can ring. See
+[docs/omnidimension.md](docs/omnidimension.md), which is explicit about which half is our contract
+and which half is the guess.
+
+**5. Webhooks.** Set `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `FL_ADMIN_TOKEN`, and either
+`OMNI_WEBHOOK_SECRET` (HMAC, preferred) or `OMNI_WEBHOOK_TOKEN` (static header, weaker). Expose
+`node src/cli.ts serve` at a public HTTPS URL and point both webhooks at it:
+
+- `POST /webhooks/meta` — leadgen (verify the subscription at `GET /webhooks/meta`)
+- `POST /webhooks/omnidimension` — post-call results
+
+These must be live *before* the campaign is, or the first leads arrive at nothing.
+
+**6. Switch to `FL_MODE=live` and run the loop.** The process now refuses to start on incomplete
+credentials rather than half-publishing a campaign.
+
+```bash
+node src/cli.ts brief --deal-value <your deal value>   # writes the brief, opens gate #1
+node src/cli.ts approvals                              # read the summary properly - this is the gate
+node src/cli.ts approve <approvalId> --by "your name"
+node src/cli.ts publish --budget 300 --days 5          # note: no --activate
+```
+
+Publishing **paused** is the point of step 6. Look at the campaign in Ads Manager — the creative, the
+targeting, the budget, the form attachment — and only then:
+
+```bash
+node src/cli.ts publish --budget 300 --days 5 --activate
+```
+
+**7. Watch the first cycle by hand** before leaving anything on a timer:
+
+```bash
+node src/cli.ts sync && node src/cli.ts review     # what it sees, and what it would do
+node src/cli.ts audit --kind call                 # why calls did or did not go out
+node src/cli.ts cycle                             # one full cycle, when you are ready
+```
+
+`schedule` and `serve --schedule` are for after you have watched a cycle do the right thing once.
 
 ## Honest limitations
 

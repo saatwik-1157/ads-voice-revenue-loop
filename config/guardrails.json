@@ -9,6 +9,7 @@
   "budgetApprovalThresholdMinor": 30000,
   "maxBudgetStepFactor": 1.2,
 
+  "maxCreativeVariants": 2,
   "minLeadsBeforeDecision": 10,
   "minSpendBeforeKillMinor": 30000,
 

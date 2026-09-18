@@ -319,9 +319,13 @@ test('moving a file into the library cannot launder machine art into cleared art
   // `library` provenance means a person put the file there and vouched for it,
   // which is why gate #1 stops warning. A generator that writes into assets/
   // records what it wrote, and those files keep reporting as machine-made.
+  // Both files are named for the angle that selects them, so each creative
+  // picks its file by name. Leaving that to the index fallback would couple
+  // this to the order creatives happen to be generated in, which is a detail
+  // the control layer is allowed to change.
   const dir = scratch();
   writeFileSync(join(dir, 'speed-01.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
-  writeFileSync(join(dir, 'cleared-by-a-human.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
+  writeFileSync(join(dir, 'cost-certainty-01.png'), encodePng(800, 1000, new Uint8Array(800 * 1000 * 3)));
   writeFileSync(join(dir, GENERATED_MANIFEST), JSON.stringify({ generated: ['speed-01.png'] }));
 
   const { brief, store } = await seedBrief();
@@ -330,7 +334,7 @@ test('moving a file into the library cannot launder machine art into cleared art
   const speed = brief.creatives.find((c) => c.angle === 'Speed')!;
   assert.equal((await library.produce(speed, brief)).provenance, 'rendered', 'listed in the manifest');
 
-  const other = brief.creatives.find((c) => c.angle !== 'Speed')!;
+  const other = brief.creatives.find((c) => c.angle === 'Cost certainty')!;
   assert.equal((await library.produce(other, brief)).provenance, 'library', 'not listed, so a person vouched');
   store.close();
 });

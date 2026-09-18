@@ -131,16 +131,23 @@ function deterministicDraft(niche: ScoredNiche, g: Guardrails): DraftedBrief {
     { angle: 'Risk of delay', hooks: ['What this costs you next week.', 'The cheap fix has an expiry date.'] },
   ];
 
-  const creatives = angles.flatMap((a) =>
-    a.hooks.map((hook) => ({
-      angle: a.angle,
-      hook,
-      primaryText: `${hook} We handle ${subject} for businesses in ${g.allowedGeos.join('/')}. Tell us what is happening and we will call you back with a fixed scope and a price - usually within 10 minutes during working hours.`,
-      headline: 'Callback with a fixed quote',
-      description: offer.deliverable,
-      format: 'reel' as const,
-    })),
-  );
+  // One hook from each angle first, then the second of each, so trimming to
+  // the control layer's variant limit drops a duplicate hook before it drops a
+  // whole angle - three angles with one hook each is a better test than one
+  // angle with three.
+  const byBreadth = [
+    ...angles.map((a) => ({ angle: a.angle, hook: a.hooks[0]! })),
+    ...angles.flatMap((a) => a.hooks.slice(1).map((hook) => ({ angle: a.angle, hook }))),
+  ];
+
+  const creatives = byBreadth.slice(0, g.maxCreativeVariants).map(({ angle, hook }) => ({
+    angle,
+    hook,
+    primaryText: `${hook} We handle ${subject} for businesses in ${g.allowedGeos.join('/')}. Tell us what is happening and we will call you back with a fixed scope and a price - usually within 10 minutes during working hours.`,
+    headline: 'Callback with a fixed quote',
+    description: offer.deliverable,
+    format: 'reel' as const,
+  }));
 
   const callScript: CallScript = {
     opener: `Hi, this is the callback you requested about ${subject}. I have two minutes of questions and then I can give you a fixed scope - is now still alright?`,

@@ -53,6 +53,17 @@ export interface Guardrails {
   requireExplicitConsent: boolean;
   bannedClaimPatterns: string[];
   holdoutBudgetShare: number;
+  /**
+   * How many creatives a brief may test at once.
+   *
+   * A budget decision, not a creative one: every ad in an ad set shares the
+   * budget, so the number of variants divides the daily spend. Six creatives on
+   * INR 300/day is INR 50 each, which at a INR 77 target CPL is under one lead
+   * per creative per day - the per-ad numbers are then noise, and the engine
+   * judges creatives on them anyway. Roughly: daily budget / variants should
+   * buy several leads per variant per day.
+   */
+  maxCreativeVariants: number;
 }
 
 const DEFAULTS: Guardrails = {
@@ -91,6 +102,7 @@ const DEFAULTS: Guardrails = {
     'assured returns',
   ],
   holdoutBudgetShare: 0.2,
+  maxCreativeVariants: 6,
 };
 
 export class GuardrailConfigError extends Error {
@@ -175,6 +187,19 @@ export function validate(g: Guardrails): void {
 
   const step = amount('maxBudgetStepFactor', g.maxBudgetStepFactor, { min: 1 });
   if (step !== null && step > 2) problems.push(`maxBudgetStepFactor must be between 1 and 2, got ${step}`);
+
+  const variants = amount('maxCreativeVariants', g.maxCreativeVariants, { min: 1 });
+  if (variants !== null && !Number.isInteger(variants)) {
+    problems.push(`maxCreativeVariants must be a whole number, got ${variants}`);
+  }
+  // Not a hard cap so much as a warning made unmissable: past this, each
+  // variant's share of the daily budget stops buying enough leads to judge it.
+  const perVariant = variants !== null && variants > 0 ? g.maxDailySpendMinor / variants : null;
+  if (perVariant !== null && Number.isFinite(perVariant) && perVariant < 5000) {
+    problems.push(
+      `maxDailySpendMinor / maxCreativeVariants is ${Math.round(perVariant)} minor units per variant per day, which is too thin to judge a creative on; raise the budget or test fewer variants`,
+    );
+  }
 
   const holdout = amount('holdoutBudgetShare', g.holdoutBudgetShare, { min: 0 });
   if (holdout !== null && holdout >= 1) problems.push(`holdoutBudgetShare must be below 1, got ${holdout}`);

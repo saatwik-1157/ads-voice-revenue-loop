@@ -574,25 +574,38 @@ node src/cli.ts cycle                             # one full cycle, when you are
 
 ```
 src/
-  config/      control layer (guardrails), niche exclusion rules, env
-  core/        types, ids, phone normalization, redaction, retry/backoff
+  cli.ts       the entry point, and nothing else - errors are classified here
+  orchestrator.ts  builds the Context: guardrails, store, and which providers
+  scheduler.ts the unattended evaluation cycle and its loop
+  apply.ts     the one path both `apply` and the scheduler act through
+  report.ts    how economics and recommendations are printed
+
+  config/      control layer (guardrails), niche exclusion rules, env + .env loader
+  core/        types, ids, phone normalization, redaction, retry/backoff, money
   store/       SQLite: runs, briefs, approvals, campaigns, leads, calls, revenue,
                spend, suppression, cycles, locks, audit, idempotency
                lock.ts: one writer per run, shared by the scheduler and `apply`
   brief/       niche scoring, offer + creative + script, claim checking, Claude adapter
-  meta/        provider interface, Marketing API client, mock delivery, publisher
+  meta/        provider interface, Marketing API client, mock delivery, publisher,
+               preflight.ts: read-only checks against a real ad account
   voice/       provider interface, OmniDimension client, mock agent, contract probe
   pipeline/    lead intake, dispatch, webhooks
   economics/   funnel metrics, decision engine
   approvals/   human gates #1 and #2
   creative/    asset library, generated fallback, PNG encoder, upload pipeline
   cli/         one module per command group; help is generated from the registry
-  scheduler.ts the unattended evaluation cycle and its loop
-  apply.ts     the one path both `apply` and the scheduler act through
   server/      webhook middleware
-  demo/        the 48-hour MVP in one command
+  demo/        the whole loop in one command
 
+config/        guardrails.json - the control layer you edit
 docs/          setup guides for the two external accounts
+scripts/       generate-placeholder-assets.ts, for filling an empty assets/
 tests/         222 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
+data/          runtime state - database, previews, mock ad account. Gitignored,
+               created on demand, and `reset --yes` throws it away
 ```
+
+Two interfaces have exactly two implementations each, and that is deliberate: `MetaProvider` (API,
+mock) and `VoiceProvider` (OmniDimension, mock). There is no third slot for a browser driver or a
+scraper, so there is nowhere to add one.

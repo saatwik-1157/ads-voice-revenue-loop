@@ -79,8 +79,16 @@ export const automationCommands: Command[] = [
         write(`listening on http://localhost:${ctx.env.port}  (mode=${ctx.env.mode})`);
         write(`  Meta leadgen webhook  POST ${ctx.env.publicBaseUrl}/webhooks/meta`);
         write(`  Voice result webhook  POST ${voiceWebhookUrl(ctx.env)}`);
-        if (!ctx.env.meta.appSecret || !(ctx.env.omni.webhookSecret || ctx.env.omni.webhookToken)) {
-          write('  WARNING: webhook secrets are unset, so every inbound payload will be rejected.');
+        // Named separately. One warning covering both routes claimed "every
+        // inbound payload will be rejected" whenever either was unset, which is
+        // false for the route that is configured - and sends an operator
+        // hunting for a fault in credentials that are working correctly.
+        if (!ctx.env.meta.appSecret) {
+          write('  WARNING: META_APP_SECRET is unset - Meta leadgen payloads will all be rejected (401).');
+        }
+        if (!ctx.env.omni.webhookSecret && !ctx.env.omni.webhookToken) {
+          write('  WARNING: no OMNI_WEBHOOK_SECRET or OMNI_WEBHOOK_TOKEN - post-call results will all');
+          write('           be rejected (401). Prefer the secret; the token is the weaker fallback.');
         }
       });
 

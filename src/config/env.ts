@@ -56,10 +56,15 @@ export function env(): Env {
     throw new Error(`FL_MODE must be "mock" or "live", got "${rawMode}"`);
   }
   const mode: Mode = rawMode;
+  const port = Number(process.env.PORT ?? 8787);
   return {
     mode,
-    port: Number(process.env.PORT ?? 8787),
-    publicBaseUrl: process.env.PUBLIC_BASE_URL ?? 'http://localhost:8787',
+    port,
+    // Defaults to the port actually bound. These are separate settings for a
+    // real reason - in production the public URL is a tunnel or a proxy, not
+    // the bind address - but hardcoding 8787 in the default meant setting PORT
+    // alone printed webhook URLs pointing at a port nothing was listening on.
+    publicBaseUrl: process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`,
     meta: {
       accessToken: process.env.META_ACCESS_TOKEN ?? '',
       adAccountId: process.env.META_AD_ACCOUNT_ID ?? '',

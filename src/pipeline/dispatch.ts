@@ -38,6 +38,7 @@ export async function dispatchLead(
   }
   if (!lead.consent) {
     store.setLeadCallStatus(lead.leadId, 'suppressed');
+    store.audit(lead.runId, 'system', 'call.suppressed', { leadId: lead.leadId, reason: 'no consent on record' });
     return { status: 'suppressed', leadId: lead.leadId, reason: 'no consent on record' };
   }
   if (!isWithinCallWindow(g, at)) {
@@ -51,7 +52,18 @@ export async function dispatchLead(
       reason: `outside calling window ${g.callWindow.startHour}:00-${g.callWindow.endHour}:00 ${g.callWindow.timeZone}`,
     };
   }
-  if (store.callsToday() >= g.maxCallsPerDay) {
+  const callsToday = store.callsToday();
+  if (callsToday >= g.maxCallsPerDay) {
+    // Audited like every other refusal. This one was silent, which made it the
+    // worst of them to hit: leads keep arriving and being accepted, no calls go
+    // out, and `audit --kind call.deferred` - the command this README points at
+    // for exactly that symptom - returned nothing at all.
+    store.audit(lead.runId, 'system', 'call.deferred', {
+      leadId: lead.leadId,
+      reason: 'daily call ceiling',
+      callsToday,
+      cap: g.maxCallsPerDay,
+    });
     return { status: 'deferred', leadId: lead.leadId, reason: `daily call ceiling ${g.maxCallsPerDay} reached` };
   }
 

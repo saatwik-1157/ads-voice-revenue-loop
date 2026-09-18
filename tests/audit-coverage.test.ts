@@ -222,3 +222,51 @@ test('events belonging to no run can still be read back', async () => {
   );
   store.close();
 });
+
+test('every way a call can be refused is written down', async () => {
+  // Found by running the loop, not by reading it: 40 leads accepted, 25
+  // dispatched, and `audit --kind call.deferred` returned nothing. Two of the
+  // five refusal paths in dispatchLead wrote no audit row at all, and the
+  // daily-ceiling one is the worst to lose - it is exactly the "leads arriving,
+  // no calls going out" symptom the audit command exists to explain.
+  const store = new Store(':memory:');
+  const { brief } = await generateBrief(G);
+  const runId = store.createRun(brief.niche.name);
+  store.saveBrief(runId, brief);
+  const voice = new MockVoiceProvider(3);
+
+  const accept = (phone: string, consent = true) => {
+    const r = intakeLead(store, G, runId, {
+      name: 'Asha R',
+      phone,
+      consent,
+      consentSource: 'meta_instant_form',
+      adId: 'ad_1',
+    });
+    if (r.status !== 'accepted') throw new Error(`setup: ${r.status}`);
+    return r.lead;
+  };
+
+  // 1. The daily ceiling, with it already reached.
+  const ceiling = { ...G, maxCallsPerDay: 1 };
+  const first = accept('9876500001');
+  await dispatchLead(store, voice, ceiling, first, brief, 'http://x/hook');
+  handleCallWebhook(store, { call_id: 'c1', lead_id: first.leadId, connected: true });
+
+  const blocked = await dispatchLead(store, voice, ceiling, accept('9876500002'), brief, 'http://x/hook');
+  assert.equal(blocked.status, 'deferred');
+  const deferrals = store.listAudit(runId, { kind: 'call.deferred' });
+  assert.equal(deferrals.length, 1, 'a ceiling deferral is recorded, not just returned');
+  assert.match(deferrals[0]!.detail, /ceiling/);
+
+  // 2. A lead with no consent on record.
+  const noConsent = accept('9876500003');
+  store.db.prepare('UPDATE leads SET consent = 0 WHERE lead_id = ?').run(noConsent.leadId);
+  const refused = await dispatchLead(store, voice, G, store.getLead(noConsent.leadId)!, brief, 'http://x/hook');
+  assert.equal(refused.status, 'suppressed');
+  assert.ok(
+    store.listAudit(runId, { kind: 'call.suppressed' }).some((e) => /consent/.test(e.detail)),
+    'refusing to dial someone who never consented is recorded',
+  );
+  store.close();
+});

@@ -534,12 +534,23 @@ node src/cli.ts cycle                             # one full cycle, when you are
 
 - **"Get the money back" is a target, not a guarantee.** This optimizes toward positive unit
   economics. It cannot make an offer profitable, and a system that spends money can lose it. The
-  stop-loss bounds the loss; nothing bounds the outcome.
+  stop-loss bounds the loss roughly; nothing bounds the outcome.
+- **The stop-loss is checked once per cycle, not continuously.** It is evaluated inside `diagnose`,
+  so between cycles Meta keeps delivering and nothing here is watching. Worst case is the threshold
+  plus one evaluation interval of spend — at `evaluationIntervalHours: 24` and ₹300/day, a ₹1,000
+  stop-loss can be discovered at about ₹1,300. The hard ceilings are the ones Meta enforces on its
+  side: the ad set's daily budget and the campaign end date. Shorten the interval if that gap
+  matters more to you than the extra API calls.
 - **The mock providers are not a forecast.** They are calibrated to plausible small-business
   lead-gen (≈₹90 CPM, 0.4–1.4% CTR, 6–24% form completion, 0.2–6% lead→sale) so the loop and the
   decision engine can be exercised honestly. Your real numbers will differ.
 - **The Meta client has been type-checked and exercised against the mock, not against a live ad
   account.** Expect to adjust field names on first contact.
+- **`preflight` has never met the real Graph API either.** It is the tool for checking everything
+  else, and it is written against Meta's documented response shapes, with its logic tested against a
+  stubbed Graph API. That proves the logic, not the field names. If it reports something that looks
+  wrong about your account, suspect it before you suspect the account — though a wrong answer from
+  preflight costs a re-read, where a wrong currency costs 85x a day's budget.
 - **Attribution is last-touch by ad id.** That is what the lead form gives you; it is not a
   multi-touch model.
 - **The AI writes; it does not decide.** Claude drafts the brief and its output is re-validated

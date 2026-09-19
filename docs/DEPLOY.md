@@ -184,14 +184,19 @@ manage. There are two versions of this, and the difference is whether the hostna
 ### The quick tunnel: no account, no domain, about five seconds
 
 ```bash
-docker compose up -d app                                    # or the container you already have
-docker run --rm --network container:<app-container> \
-  cloudflare/cloudflared:latest tunnel --url http://localhost:8787
+./deploy/quick-tunnel.sh <app-container>
 ```
 
 It prints a `https://something-random.trycloudflare.com` URL. No signup, no token, no card, and a
 real certificate — this project's own verification run against one came back with a Google Trust
-Services certificate and every route behaving.
+Services certificate and all 13 checks passing.
+
+The script puts both containers on a shared user-defined network rather than using
+`--network container:<app>`. That difference is not cosmetic. Sharing the app's network namespace
+means destroying or recreating the app tears the namespace out from under the tunnel — and the
+tunnel goes on reporting `Up` while its log fills with `network is unreachable` and Cloudflare serves
+error pages to every caller. A tunnel that looks healthy while dropping every lead is the worst shape
+this failure could take, and it happened here before the script existed.
 
 **What it is for:** proving the loop works over the real internet. `contract-test --live`, and a
 first genuine post-call webhook from OmniDimension — which is the least-verified integration in the

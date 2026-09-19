@@ -20,7 +20,7 @@ a public HTTPS URL, the live loop cannot close: leads never arrive and revenue i
 | | |
 |---|---|
 | A domain | Free, from FreeDomain. You register it — see below. |
-| A server with a public IP | Any small VPS. Docker and Docker Compose installed. 1 GB RAM is plenty. |
+| A server with a public IP | Any small VPS. Docker and Docker Compose installed. 1 GB RAM is plenty. Or **no server at all** — see [the tunnel route](#no-server-a-tunnel-instead). |
 | Ports 80 and 443 open | 443 serves traffic; **80 is required** for the certificate challenge. |
 | A `.env` file | Yours, on the server. Never committed, never baked into the image. |
 
@@ -158,6 +158,33 @@ Voice result webhook    https://yourname.dpdns.org/webhooks/omnidimension
 Then the live sequence from the README's **Going live** section — `preflight`, `preflight
 --lead-form`, `contract-test --live`, a paused publish inspected in Ads Manager — with `FL_MODE=live`
 only at the end.
+
+---
+
+## No server: a tunnel instead
+
+If you do not have a VPS and do not want to pay for one, Cloudflare Tunnel gives you the same public
+HTTPS URL from a machine you already own — no public IP, no port forwarding, no certificate to
+manage. FreeDomain supports this directly: its "bring your own DNS" is exactly the custom-nameserver
+delegation Cloudflare needs.
+
+1. Create a free Cloudflare account and add your FreeDomain hostname as a zone.
+2. Set the nameservers Cloudflare gives you as your domain's custom nameservers in the FreeDomain
+   dashboard.
+3. In **Zero Trust → Networks → Tunnels**, create a tunnel and copy its token.
+4. Add a public hostname on that tunnel: your domain → `http://app:8787`.
+5. Put the token in `.env` as `CLOUDFLARE_TUNNEL_TOKEN`, then:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
+```
+
+Caddy is switched off in that configuration — Cloudflare terminates TLS, and two things trying to own
+the certificate is a bad time.
+
+**When not to use this.** The loop has to be up to receive leads and dispatch calls. A desktop that
+sleeps is a desktop that drops them, and a dropped lead is a person who filled in your form and never
+got a call. Use the tunnel to get live and prove the loop; move to a VPS before real money is moving.
 
 ---
 

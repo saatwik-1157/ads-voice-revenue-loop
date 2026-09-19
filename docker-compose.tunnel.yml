@@ -1,0 +1,27 @@
+# Serve the public hostname from a machine with no public IP.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
+#
+# Cloudflare holds the connection open from the inside, so nothing is exposed
+# and no port is forwarded. It also terminates TLS, which is why Caddy is
+# switched off here - two things trying to own the certificate is a bad time.
+#
+# Use this to get live today on a machine you already have. It is not where
+# this should live once real money is moving: the loop has to be up to receive
+# leads and dispatch calls, and a desktop that sleeps is a desktop that drops
+# them.
+
+services:
+  # Caddy is not needed - Cloudflare is the edge. Overriding the image with a
+  # no-op is how compose lets you drop a service from the base file.
+  caddy:
+    profiles: ['disabled']
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # The token identifies one named tunnel and is a credential: it goes in
+    # .env, never on the command line, where it would land in shell history.
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env - create the tunnel in the Cloudflare Zero Trust dashboard}
+    depends_on:
+      - app

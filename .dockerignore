@@ -1,0 +1,23 @@
+# Secrets never enter the image. .env is mounted or passed as environment at
+# run time; a token baked into a layer is in the image forever, including in
+# anything the image is pushed to.
+.env
+.env.*
+!.env.example
+
+node_modules/
+data/
+*.log
+
+.git/
+.github/
+.vscode/
+
+# Not needed at runtime. The image has no dev toolchain, so shipping the tests
+# and configs would only make it bigger and imply it can run them.
+tests/
+docs/
+eslint.config.js
+tsconfig.json
+*.md
+!README.md

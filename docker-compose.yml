@@ -1,0 +1,50 @@
+# The app plus a reverse proxy that gets a real certificate for the domain.
+#
+# HTTPS is not decoration here. Meta will not deliver leadgen webhooks to a
+# plain-HTTP URL, and `contract-test` refuses a PUBLIC_BASE_URL that is not
+# https:// for the same reason. Caddy requests and renews a Let's Encrypt
+# certificate for $DOMAIN on its own, which is the whole reason this pairs with
+# a free domain rather than needing a paid one.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides whatever .env says, because inside the network these are the
+      # only values that are correct.
+      FL_DB_PATH: /app/data/autopilot.db
+      PORT: 8787
+      FL_LOG_FORMAT: json
+      PUBLIC_BASE_URL: https://${DOMAIN}
+    volumes:
+      # Named volume, not a bind mount: the spend and revenue history the
+      # decision engine reasons over lives here and has to survive a redeploy.
+      - autopilot-data:/app/data
+    # Not published to the host. Only Caddy reaches the app, so the admin
+    # routes are never exposed on plain HTTP even if a firewall rule is wrong.
+    expose:
+      - '8787'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your registered hostname, e.g. yourname.dpdns.org}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account state. Losing this means re-issuing on
+      # every restart and hitting Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  autopilot-data:
+  caddy-data:
+  caddy-config:

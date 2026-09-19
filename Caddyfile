@@ -1,0 +1,43 @@
+# Caddy obtains and renews a Let's Encrypt certificate for {$DOMAIN}
+# automatically. Nothing here needs a key or a cron job.
+
+{$DOMAIN} {
+	encode gzip
+
+	# Liveness is open by design, and a load balancer or uptime check needs it
+	# without a token. It says only that the process is up.
+	# /health/ready is left on the normal path below - it reports database and
+	# webhook state, which is not something to hand to anyone who asks.
+	handle /health {
+		reverse_proxy app:8787
+	}
+
+	# The webhook routes authenticate by signature, not by token, and must stay
+	# reachable by Meta and OmniDimension. They are separated here only so the
+	# request body is passed through untouched - the HMAC is computed over the
+	# raw bytes, and anything that rewrites the body breaks verification.
+	handle /webhooks/* {
+		reverse_proxy app:8787 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	handle {
+		reverse_proxy app:8787
+	}
+
+	# The app already logs every request as JSON on stderr with a request id.
+	# This is the edge view: what arrived before anything was rejected.
+	log {
+		output stdout
+		format json
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}

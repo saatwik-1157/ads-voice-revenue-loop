@@ -278,6 +278,10 @@ docker run --rm -v founder-labs-autopilot_autopilot-data:/data -v "$PWD:/backup"
 - `deploy/verify.sh` against the running container: **11 passed, 0 failed**, exit 0. Its
   no-connection path was exercised too, and reports "nothing is answering on 443" rather than
   claiming a route is exposed.
+- **The tunnel survives the app container being replaced.** `deploy/quick-tunnel.sh` was run, then
+  the app container was destroyed and recreated; the same public URL still answered 200, and
+  `verify.sh` against it came back 13 passed, 0 failed. Under the old `--network container:` form
+  this is exactly what silently killed the tunnel.
 - `deploy/provision.sh` parses (`bash -n`). Its Docker install, `ufw` and DNS branches have **not**
   been run — this machine is Windows and has no `ufw`.
 - **The data volume survives the container.** The container was destroyed and a new one started on

@@ -501,8 +501,7 @@ not live-ready is the normal state; the output says so rather than leaving you t
 server, and takes about five seconds:
 
 ```bash
-docker run --rm --network container:<app-container> \
-  cloudflare/cloudflared:latest tunnel --url http://localhost:8787
+./deploy/quick-tunnel.sh <app-container>
 ```
 
 That was verified end to end from outside this machine: real DNS, a real certificate, both webhook

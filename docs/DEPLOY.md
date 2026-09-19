@@ -58,7 +58,28 @@ you yet will fail and count against Let's Encrypt's rate limits:
 dig +short yourname.dpdns.org
 ```
 
-## 3. Get the code and the secrets onto the server
+## 3. Provision, in one command
+
+On the server:
+
+```bash
+git clone <your remote> founder-labs-autopilot
+cd founder-labs-autopilot
+sudo ./deploy/provision.sh yourname.dpdns.org
+```
+
+It installs Docker if it is missing, generates `.env` with random admin and viewer tokens at mode
+600, opens 80 and 443 in `ufw` if that is what you use, warns you if the domain does not point at
+this host, and brings the stack up. It is idempotent, and it **will not overwrite an existing
+`.env`** — that file holds your tokens and clobbering it is how you lock yourself out.
+
+Provider credentials are left blank on purpose. They are yours to paste in. The rest of this section
+is what that script is doing, if you would rather do it by hand.
+
+<details>
+<summary>By hand</summary>
+
+### Get the code and the secrets onto the server
 
 ```bash
 git clone <your remote> founder-labs-autopilot
@@ -86,29 +107,44 @@ says, because inside the container that is the only correct value.
 closed rather than falling open — but closed routes on a public host still mean the webhooks are the
 only thing reachable, and you will not be able to read your own runs.
 
-## 4. Start it
-
 ```bash
 docker compose up -d --build
-docker compose logs -f caddy      # watch the certificate get issued
 ```
 
-Caddy requests and renews the certificate on its own. There is no key to install and no cron job.
+</details>
+
+## 4. Watch the certificate get issued
+
+```bash
+docker compose logs -f caddy
+```
+
+Caddy requests and renews it on its own. There is no key to install and no cron job. This is the step
+that fails most often, and almost always for one of two reasons: port 80 is closed, or a proxy
+intercepted the challenge.
 
 ## 5. Check it from outside
 
-From your laptop, not from the server:
+**From your laptop, not from the server.** A green container proves the process started. It proves
+nothing about DNS, the certificate, the firewall, or whether Meta can reach the webhook route.
 
 ```bash
-curl -s https://yourname.dpdns.org/health
-curl -s https://yourname.dpdns.org/health/ready | jq
-curl -s -o /dev/null -w "%{http_code}\n" https://yourname.dpdns.org/runs                    # 401
-curl -s -o /dev/null -w "%{http_code}\n" -H "x-fl-token: $FL_VIEWER_TOKEN" \
-     https://yourname.dpdns.org/runs                                                        # 200
+FL_VIEWER_TOKEN=<from .env> ./deploy/verify.sh yourname.dpdns.org
 ```
 
-`/health/ready` returning `ready: true` means the database is readable inside the volume and webhook
-deliveries are not failing. A 503 there is real — it queries rather than answering 200 on principle.
+It checks DNS, the certificate and its expiry, liveness and readiness, that `/runs`, `/runs/:id`,
+`/leads` and `/revenue` all refuse anonymous callers, that a wrong token gets nothing, that both
+webhook routes are **reachable and refusing unsigned deliveries** — reachable matters as much as
+refusing, since Meta has to get through — and that plain HTTP redirects. Exit code 0 means all of it
+passed.
+
+To smoke-test the app on the server before DNS or the certificate are ready:
+
+```bash
+FL_VERIFY_BASE=http://127.0.0.1:8787 ./deploy/verify.sh yourname.dpdns.org
+```
+
+That skips DNS and TLS and says so loudly. It is not a substitute for the real check.
 
 ## 6. Point the providers at it
 
@@ -168,6 +204,11 @@ docker run --rm -v founder-labs-autopilot_autopilot-data:/data -v "$PWD:/backup"
 - `GET /runs` anonymous → 401, with a viewer token → 200, `POST /revenue` with a viewer token → 401.
 - Structured JSON logs reach `docker logs`.
 - `docker compose config` resolves, and refuses to start with a clear message when `DOMAIN` is unset.
+- `deploy/verify.sh` against the running container: **11 passed, 0 failed**, exit 0. Its
+  no-connection path was exercised too, and reports "nothing is answering on 443" rather than
+  claiming a route is exposed.
+- `deploy/provision.sh` parses (`bash -n`). Its Docker install, `ufw` and DNS branches have **not**
+  been run — this machine is Windows and has no `ufw`.
 
 **Not tested, because it needs a registered domain and a public server:**
 

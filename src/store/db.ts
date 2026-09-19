@@ -727,6 +727,38 @@ export class Store {
     return row ? { ...row, consent: row.consent === 1 } : undefined;
   }
 
+  /**
+   * Run several writes as one, or none of them.
+   *
+   * Publishing writes a campaign and then its ads; a call outcome writes the
+   * call, then revenue, then audit rows. Crashing between those left partial
+   * state that no later read could tell apart from the real thing - a campaign
+   * with no ads reads as a campaign whose ads were all deleted.
+   *
+   * Synchronous on purpose. `node:sqlite` is a synchronous driver, and awaiting
+   * inside a transaction would let another writer interleave between the
+   * statements this is supposed to make atomic.
+   */
+  transaction<T>(fn: () => T): T {
+    // Nested calls join the outer transaction rather than starting a second
+    // one, which SQLite does not support.
+    if (this.#inTransaction) return fn();
+    this.#inTransaction = true;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    } finally {
+      this.#inTransaction = false;
+    }
+  }
+
+  #inTransaction = false;
+
   // --- webhook events ----------------------------------------------------
 
   /**

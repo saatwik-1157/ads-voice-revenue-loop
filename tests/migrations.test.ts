@@ -128,3 +128,53 @@ test('a legacy database carrying an orphan row is refused rather than half-migra
     'the upgrade refuses and says why',
   );
 });
+
+test('a transaction leaves nothing behind when the work throws', () => {
+  const store = new Store(freshPath());
+  const runId = store.createRun('test');
+
+  assert.throws(
+    () =>
+      store.transaction(() => {
+        store.audit(runId, 'system', 'first', {});
+        store.audit(runId, 'system', 'second', {});
+        throw new Error('provider exploded halfway');
+      }),
+    /exploded/,
+  );
+  assert.equal(store.listAudit(runId).length, 0, 'neither write survived');
+
+  // And the store is still usable afterwards - a failed transaction must not
+  // leave the connection wedged mid-transaction.
+  store.transaction(() => { store.audit(runId, 'system', 'after', {}); });
+  assert.equal(store.listAudit(runId).length, 1);
+  store.close();
+});
+
+test('a nested transaction joins the outer one rather than starting a second', () => {
+  // SQLite has no nested transactions; a naive BEGIN inside a BEGIN throws.
+  const store = new Store(freshPath());
+  const runId = store.createRun('test');
+
+  assert.throws(
+    () =>
+      store.transaction(() => {
+        store.audit(runId, 'system', 'outer', {});
+        store.transaction(() => { store.audit(runId, 'system', 'inner', {}); });
+        throw new Error('rolled back');
+      }),
+    /rolled back/,
+  );
+  assert.equal(store.listAudit(runId).length, 0, 'the inner write rolls back with the outer');
+
+  const committed = store.transaction(() => {
+    store.audit(runId, 'system', 'outer', {});
+    return store.transaction(() => {
+      store.audit(runId, 'system', 'inner', {});
+      return 'done';
+    });
+  });
+  assert.equal(committed, 'done');
+  assert.equal(store.listAudit(runId).length, 2, 'and commits together');
+  store.close();
+});

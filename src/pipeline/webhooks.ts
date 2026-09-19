@@ -66,48 +66,54 @@ export function handleCallWebhook(store: Store, raw: RawCallResult): WebhookResu
   };
 
   // Idempotent by call id: a retried webhook must not double-count revenue.
-  return store.once('voice.webhook', [outcome.callId], () => {
-    store.saveCall(outcome);
-    store.setLeadCallStatus(leadId, 'completed');
+  // One transaction: the call, the suppression, the revenue and the audit rows
+  // are one fact about one phone conversation. Crashing between them left a
+  // call with no revenue, or revenue nobody could explain - and no later read
+  // could tell that apart from a call that genuinely earned nothing.
+  return store.once('voice.webhook', [outcome.callId], () =>
+    store.transaction(() => {
+      store.saveCall(outcome);
+      store.setLeadCallStatus(leadId, 'completed');
 
-    if (parsedValue === null) {
-      store.audit(lead.runId, 'voice', 'revenue.unusable_value', {
+      if (parsedValue === null) {
+        store.audit(lead.runId, 'voice', 'revenue.unusable_value', {
+          leadId,
+          callId: outcome.callId,
+          received: JSON.stringify(raw.expected_value),
+          note: 'call recorded with zero value; post the real amount to /revenue if there was a sale',
+        });
+      }
+
+      if (outcome.optOut) {
+        store.suppress(lead.phoneE164, 'lead opted out on call');
+        store.audit(lead.runId, 'voice', 'lead.opted_out', { leadId });
+      }
+      // Only a won sale counts as revenue. An expected value on a pending
+      // appointment is a forecast, and forecasts must not move ROAS.
+      if (outcome.saleStatus === 'won' && outcome.expectedValueMinor > 0) {
+        store.recordRevenue(leadId, outcome.expectedValueMinor, 'voice_agent');
+        // Money moving is the single most important thing that happens here, so
+        // it gets its own entry rather than being implied by the call outcome.
+        store.audit(lead.runId, 'voice', 'revenue.recorded', {
+          leadId,
+          amountMinor: outcome.expectedValueMinor,
+          source: 'voice_agent',
+          adId: lead.adId,
+          creativeId: lead.creativeId,
+        });
+      }
+      store.audit(lead.runId, 'voice', 'call.outcome', {
         leadId,
         callId: outcome.callId,
-        received: JSON.stringify(raw.expected_value),
-        note: 'call recorded with zero value; post the real amount to /revenue if there was a sale',
-      });
-    }
-
-    if (outcome.optOut) {
-      store.suppress(lead.phoneE164, 'lead opted out on call');
-      store.audit(lead.runId, 'voice', 'lead.opted_out', { leadId });
-    }
-    // Only a won sale counts as revenue. An expected value on a pending
-    // appointment is a forecast, and forecasts must not move ROAS.
-    if (outcome.saleStatus === 'won' && outcome.expectedValueMinor > 0) {
-      store.recordRevenue(leadId, outcome.expectedValueMinor, 'voice_agent');
-      // Money moving is the single most important thing that happens here, so
-      // it gets its own entry rather than being implied by the call outcome.
-      store.audit(lead.runId, 'voice', 'revenue.recorded', {
-        leadId,
-        amountMinor: outcome.expectedValueMinor,
-        source: 'voice_agent',
+        connected: outcome.connected,
+        qualified: outcome.qualified,
+        saleStatus: outcome.saleStatus,
         adId: lead.adId,
         creativeId: lead.creativeId,
       });
-    }
-    store.audit(lead.runId, 'voice', 'call.outcome', {
-      leadId,
-      callId: outcome.callId,
-      connected: outcome.connected,
-      qualified: outcome.qualified,
-      saleStatus: outcome.saleStatus,
-      adId: lead.adId,
-      creativeId: lead.creativeId,
-    });
-    return { status: 'recorded', outcome } satisfies WebhookResult;
-  });
+      return { status: 'recorded', outcome } satisfies WebhookResult;
+    }),
+  );
 }
 
 /** Record a conversion that arrives from the payment system rather than the call. */

@@ -157,8 +157,16 @@ export async function publishCampaign(
     createdAt: now(),
     provider: provider.kind === 'meta' ? 'meta' : 'mock',
   };
-  store.saveCampaign(campaign);
-  store.audit(runId, 'agent', 'campaign.created', { campaignId, adsetId, dailyBudgetMinor: options.dailyBudgetMinor });
+  store.transaction(() => {
+    store.saveCampaign(campaign);
+    store.audit(runId, 'agent', 'campaign.created', { campaignId, adsetId, dailyBudgetMinor: options.dailyBudgetMinor });
+  });
+
+  // The loop below cannot be one transaction: each iteration awaits two calls
+  // to Meta, and holding a write transaction across network I/O would block
+  // every other writer for as long as the provider takes. Each ad row is a
+  // single atomic write instead, and `onceAsync` makes a resumed publish reuse
+  // the ads it already created rather than duplicating them.
 
   const ads: AdRecord[] = [];
   for (const variant of brief.creatives) {
@@ -197,17 +205,27 @@ export async function publishCampaign(
 
   let activated = false;
   if (options.activate) {
+    // Every provider call first. A database transaction cannot be held open
+    // across network I/O - SQLite would block other writers for the duration -
+    // so the remote changes happen here and the local record of them is
+    // committed as one unit below.
     await provider.setStatus(campaignId, 'ACTIVE');
     await provider.setStatus(adsetId, 'ACTIVE');
     for (const ad of ads) {
       await provider.setStatus(ad.adId, 'ACTIVE');
-      store.setAdStatus(ad.adId, 'ACTIVE');
     }
-    store.setCampaignStatus(campaignId, 'ACTIVE');
+
+    // One unit: ads active, campaign active, run live, audited. Previously a
+    // throw partway left a campaign marked ACTIVE on a run still marked
+    // approved - a state no later read could distinguish from a real one.
+    store.transaction(() => {
+      for (const ad of ads) store.setAdStatus(ad.adId, 'ACTIVE');
+      store.setCampaignStatus(campaignId, 'ACTIVE');
+      store.setRunState(runId, 'live');
+      store.audit(runId, 'agent', 'campaign.activated', { campaignId, ads: ads.length });
+    });
     campaign.status = 'ACTIVE';
     activated = true;
-    store.setRunState(runId, 'live');
-    store.audit(runId, 'agent', 'campaign.activated', { campaignId, ads: ads.length });
   } else {
     store.setRunState(runId, 'approved', 'published paused; activate explicitly');
   }

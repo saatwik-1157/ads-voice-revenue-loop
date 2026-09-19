@@ -159,12 +159,17 @@ test('a database written before the status column still honours its completed wo
   store.close();
   assert.equal(ran, 1);
 
-  // Rebuild the table as it looked before `status` existed.
+  // Rebuild the table as it looked before `status` existed - and drop the
+  // migration ledger with it, because a database old enough to lack the column
+  // is also old enough to predate the ledger. Leaving the ledger behind would
+  // make the migration correctly skip, and would test a database that has
+  // never existed.
   const raw = new DatabaseSync(path);
   raw.exec('CREATE TABLE old_idem (key TEXT PRIMARY KEY, operation TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL)');
   raw.exec('INSERT INTO old_idem SELECT key, operation, result, created_at FROM idempotency');
   raw.exec('DROP TABLE idempotency');
   raw.exec('ALTER TABLE old_idem RENAME TO idempotency');
+  raw.exec('DROP TABLE schema_migrations');
   raw.close();
 
   store = new Store(path);

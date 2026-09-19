@@ -104,7 +104,10 @@ test('the audit trail can be filtered by kind, by family, and by actor', () => {
   store.audit(runId, 'system', 'call.deferred', { leadId: 'a', window: '10-19' });
   store.audit(runId, 'system', 'call.suppressed', { leadId: 'b' });
   store.audit(runId, 'agent', 'campaign.created', { campaignId: 'c1' });
-  store.audit('other_run', 'agent', 'campaign.created', { campaignId: 'c2' });
+  // A real second run. Audit rows are foreign-keyed to runs now, so auditing
+  // against an id that was never created is exactly the orphan row the
+  // constraint exists to refuse.
+  store.audit(store.createRun('other'), 'agent', 'campaign.created', { campaignId: 'c2' });
 
   assert.equal(store.listAudit(runId).length, 4, 'other runs are not mixed in');
   assert.equal(store.listAudit(runId, { kind: 'call.deferred' }).length, 1, 'an exact kind');

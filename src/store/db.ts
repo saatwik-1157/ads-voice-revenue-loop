@@ -29,14 +29,14 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE TABLE IF NOT EXISTS briefs (
   brief_id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
   created_at TEXT NOT NULL,
   payload TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
   approval_id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
   gate TEXT NOT NULL,
   subject TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS approvals (
 CREATE TABLE IF NOT EXISTS campaigns (
   campaign_id TEXT PRIMARY KEY,
   adset_id TEXT NOT NULL,
-  run_id TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
   brief_id TEXT NOT NULL,
   objective TEXT NOT NULL,
   daily_budget_minor INTEGER NOT NULL,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
 
 CREATE TABLE IF NOT EXISTS ads (
   ad_id TEXT PRIMARY KEY,
-  campaign_id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL REFERENCES campaigns(campaign_id),
   adset_id TEXT NOT NULL,
   creative_id TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS ads (
 
 CREATE TABLE IF NOT EXISTS leads (
   lead_id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
   name TEXT NOT NULL,
   phone_e164 TEXT NOT NULL,
   email TEXT,
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS leads (
 
 CREATE TABLE IF NOT EXISTS calls (
   call_id TEXT PRIMARY KEY,
-  lead_id TEXT NOT NULL,
+  lead_id TEXT NOT NULL REFERENCES leads(lead_id),
   connected INTEGER NOT NULL,
   qualified INTEGER NOT NULL,
   intent_score INTEGER NOT NULL,
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS calls (
 
 CREATE TABLE IF NOT EXISTS spend (
   spend_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
   ad_id TEXT,
   spend_minor INTEGER NOT NULL,
   impressions INTEGER NOT NULL,
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS spend (
 
 CREATE TABLE IF NOT EXISTS revenue (
   revenue_id TEXT PRIMARY KEY,
-  lead_id TEXT NOT NULL,
+  lead_id TEXT NOT NULL REFERENCES leads(lead_id),
   amount_minor INTEGER NOT NULL,
   source TEXT NOT NULL,
   recorded_at TEXT NOT NULL
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS idempotency (
 
 CREATE TABLE IF NOT EXISTS audit (
   event_id TEXT PRIMARY KEY,
-  run_id TEXT,
+  run_id TEXT REFERENCES runs(run_id),
   at TEXT NOT NULL,
   actor TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS audit (
 
 CREATE TABLE IF NOT EXISTS cycles (
   cycle_id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
   started_at TEXT NOT NULL,
   finished_at TEXT,
   status TEXT NOT NULL,
@@ -170,7 +170,90 @@ CREATE INDEX IF NOT EXISTS idx_leads_run ON leads(run_id);
 CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);
 CREATE INDEX IF NOT EXISTS idx_spend_run ON spend(run_id);
 CREATE INDEX IF NOT EXISTS idx_audit_run ON audit(run_id);
+
+-- Hit on every dispatch: suppression lookup and the per-person attempt cap
+-- both filter leads by phone.
+CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads(phone_e164);
+-- Every per-ad economics query filters here.
+CREATE INDEX IF NOT EXISTS idx_leads_ad ON leads(ad_id);
+CREATE INDEX IF NOT EXISTS idx_revenue_lead ON revenue(lead_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_run_status ON approvals(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_audit_kind ON audit(kind);
+CREATE INDEX IF NOT EXISTS idx_ads_campaign ON ads(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_briefs_run ON briefs(run_id);
 `;
+
+/** The DDL for one table, taken from SCHEMA so there is a single source of truth. */
+function ddlFor(table: string): string {
+  const match = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`).exec(SCHEMA);
+  if (!match) throw new Error(`no CREATE TABLE found for ${table}`);
+  return match[0];
+}
+
+/**
+ * Rebuild a table so it picks up constraints that ALTER TABLE cannot add.
+ *
+ * SQLite has no "ADD CONSTRAINT", so the documented route is to build the new
+ * shape alongside, copy the rows, and swap. Column list comes from the live
+ * table, so a rebuild copies exactly what is there rather than assuming the
+ * old and new shapes match.
+ */
+function rebuildWithConstraints(db: DatabaseSync, table: string): void {
+  const existing = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+  if (existing.length === 0) return;
+
+  const wanted = ddlFor(table);
+  const newCols = new Set(
+    (wanted.match(/\n {2}(\w+) /g) ?? []).map((m) => m.trim().split(/\s/)[0]!),
+  );
+  const carried = existing.filter((c) => newCols.has(c));
+  const cols = carried.map((c) => `"${c}"`).join(', ');
+
+  db.exec(`ALTER TABLE ${table} RENAME TO ${table}_migrating`);
+  db.exec(wanted);
+  db.exec(`INSERT INTO ${table} (${cols}) SELECT ${cols} FROM ${table}_migrating`);
+  db.exec(`DROP TABLE ${table}_migrating`);
+}
+
+interface Migration {
+  version: number;
+  name: string;
+  up: (db: DatabaseSync) => void;
+}
+
+/**
+ * Applied in order, once each. Never edit one that has shipped - add another.
+ */
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: 'idempotency.status',
+    up: (db) => {
+      const columns = db.prepare('PRAGMA table_info(idempotency)').all() as Array<{ name: string }>;
+      if (!columns.some((c) => c.name === 'status')) {
+        // Rows written before this existed are all completed operations.
+        db.exec("ALTER TABLE idempotency ADD COLUMN status TEXT NOT NULL DEFAULT 'done'");
+      }
+    },
+  },
+  {
+    version: 2,
+    name: 'foreign keys on the parent-child tables',
+    up: (db) => {
+      // PRAGMA foreign_keys was ON from the first release and no table declared
+      // a single REFERENCES clause, so the pragma implied an integrity that did
+      // not exist. A database created before this has orphan rows waiting to
+      // happen; foreign_key_check after the rebuild refuses to carry on if any
+      // already exist.
+      for (const table of ['briefs', 'approvals', 'campaigns', 'ads', 'leads', 'calls', 'spend', 'revenue', 'audit', 'cycles']) {
+        const fks = db.prepare(`PRAGMA foreign_key_list(${table})`).all();
+        if (fks.length === 0) rebuildWithConstraints(db, table);
+      }
+      // A rebuild drops the table's indexes with it.
+      db.exec(SCHEMA);
+    },
+  },
+];
 
 /**
  * The same logical operation is already running somewhere else.
@@ -207,14 +290,58 @@ export class Store {
    * Changes to tables that already exist in databases created before them.
    *
    * CREATE TABLE IF NOT EXISTS does nothing to a table that is already there,
-   * so a column added later has to be added explicitly or it is missing on
+   * so anything added later has to be applied explicitly or it is missing on
    * every database except a brand new one.
+   *
+   * Each migration is numbered, applied once, recorded in `schema_migrations`,
+   * and wrapped in a transaction. Ordering is the array order. There is no down
+   * path on purpose: rolling a schema backwards over live data is more
+   * dangerous than rolling forwards to a fix.
    */
   #migrate(): void {
-    const columns = this.db.prepare('PRAGMA table_info(idempotency)').all() as Array<{ name: string }>;
-    if (!columns.some((c) => c.name === 'status')) {
-      // Rows written before this existed are all completed operations.
-      this.db.exec("ALTER TABLE idempotency ADD COLUMN status TEXT NOT NULL DEFAULT 'done'");
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS schema_migrations (
+         version INTEGER PRIMARY KEY,
+         name TEXT NOT NULL,
+         applied_at TEXT NOT NULL
+       )`,
+    );
+    const applied = new Set(
+      (this.db.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>).map(
+        (r) => r.version,
+      ),
+    );
+
+    for (const m of MIGRATIONS) {
+      if (applied.has(m.version)) continue;
+      // A migration that half-applies is worse than one that has not run, so
+      // each is all-or-nothing. Foreign keys are suspended across a rebuild
+      // because the table being replaced is briefly absent.
+      this.db.exec('PRAGMA foreign_keys = OFF');
+      this.db.exec('BEGIN');
+      try {
+        m.up(this.db);
+        this.db
+          .prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?,?,?)')
+          .run(m.version, m.name, now());
+        this.db.exec('COMMIT');
+      } catch (err) {
+        this.db.exec('ROLLBACK');
+        throw new Error(`migration ${m.version} (${m.name}) failed and was rolled back: ${(err as Error).message}`, {
+          cause: err,
+        });
+      } finally {
+        this.db.exec('PRAGMA foreign_keys = ON');
+      }
+
+      // Refuse to carry on with data the new constraints reject.
+      const violations = this.db.prepare('PRAGMA foreign_key_check').all();
+      if (violations.length > 0) {
+        throw new Error(
+          `migration ${m.version} (${m.name}) left ${violations.length} foreign key violation(s); ` +
+            `the data does not satisfy the new constraints`,
+        );
+      }
     }
   }
 

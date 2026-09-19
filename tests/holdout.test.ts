@@ -5,6 +5,7 @@ import { defaultGuardrails } from '../src/config/guardrails.ts';
 import { planScale } from '../src/economics/decision.ts';
 import { pauseKilledAds } from '../src/apply.ts';
 import { MockMetaProvider } from '../src/meta/mock.ts';
+import { now } from '../src/core/util.ts';
 import type { Context } from '../src/orchestrator.ts';
 import type { Recommendation, Economics } from '../src/core/types.ts';
 
@@ -29,6 +30,28 @@ const EMPTY: Economics = {
   connectRate: null,
   qualifyRate: null,
 };
+
+
+/**
+ * An ad belongs to a campaign, and the schema now enforces that. These fixtures
+ * used to save ads against a campaign id that was never created - an orphan row
+ * the foreign key correctly refuses.
+ */
+function seedCampaign(store: Store, runId: string): void {
+  store.saveCampaign({
+    campaignId: 'c1',
+    adsetId: 's1',
+    runId,
+    briefId: 'b1',
+    objective: 'OUTCOME_LEADS',
+    dailyBudgetMinor: 50000,
+    currency: 'INR',
+    status: 'ACTIVE',
+    geo: ['IN'],
+    createdAt: now(),
+    provider: 'mock',
+  });
+}
 
 test('a scale step reserves the holdout share for creatives still being tested', () => {
   const plan = planScale(G, 100000, 'SCALE', [
@@ -102,6 +125,7 @@ function recFor(perAd: Array<{ adId: string; decision: Recommendation['decision'
 test('apply pauses the condemned creatives', async () => {
   const store = new Store(':memory:');
   const runId = store.createRun('test');
+  seedCampaign(store, runId);
   for (const adId of ['winner', 'dead_a', 'dead_b']) {
     store.saveAd({ adId, campaignId: 'c1', adsetId: 's1', creativeId: `cr_${adId}`, status: 'ACTIVE', createdAt: '' });
   }
@@ -122,6 +146,7 @@ test('apply pauses the condemned creatives', async () => {
 test('apply refuses to pause an ad the scale plan is holding open, and says so in the audit', async () => {
   const store = new Store(':memory:');
   const runId = store.createRun('test');
+  seedCampaign(store, runId);
   for (const adId of ['winner', 'reserved']) {
     store.saveAd({ adId, campaignId: 'c1', adsetId: 's1', creativeId: `cr_${adId}`, status: 'ACTIVE', createdAt: '' });
   }
@@ -151,6 +176,7 @@ test('pausing an ad is audited, not just the refusal to pause one', async () => 
   // real change to the ad account left no trace.
   const store = new Store(':memory:');
   const runId = store.createRun('test');
+  seedCampaign(store, runId);
   for (const adId of ['winner', 'dead']) {
     store.saveAd({ adId, campaignId: 'c1', adsetId: 's1', creativeId: `cr_${adId}`, status: 'ACTIVE', createdAt: '' });
   }

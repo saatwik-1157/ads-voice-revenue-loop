@@ -169,7 +169,14 @@ async function handle(
     // The database is the only hard dependency. A failed read here is fatal.
     try {
       ctx.store.db.prepare('SELECT 1').get();
-      checks.database = { ok: true };
+      // A query succeeding is not enough. If the file was deleted out from
+      // under this process - `reset` while `serve` is running - every read and
+      // write still works against the held inode, and all of it is discarded
+      // when the process exits. Reporting healthy through that is worse than
+      // failing, because nothing else will notice either.
+      checks.database = ctx.store.fileMissing()
+        ? { ok: false, detail: `${ctx.store.path} no longer exists; restart this process` }
+        : { ok: true };
     } catch (err) {
       checks.database = { ok: false, detail: (err as Error).message.slice(0, 200) };
     }

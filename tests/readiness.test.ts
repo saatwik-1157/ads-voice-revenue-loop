@@ -1,5 +1,8 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Store } from '../src/store/db.ts';
 import { defaultGuardrails } from '../src/config/guardrails.ts';
 import { assessReadiness, formatReadiness } from '../src/readiness.ts';
@@ -214,4 +217,43 @@ test('the rendered report states both verdicts explicitly', () => {
   // Being deployable-but-not-live is normal, and the output should say so
   // rather than leaving someone to conclude something is broken.
   assert.match(text, /normal state before going live/);
+});
+
+test('a store whose file has been removed reports it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fl-readiness-'));
+  const path = join(dir, 'autopilot.db');
+  const store = new Store(path);
+  assert.equal(store.fileMissing(), false);
+
+  store.close();
+  rmSync(path, { force: true });
+  assert.equal(store.fileMissing(), true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a database deleted out from under a live process is detected', { skip: process.platform === 'win32' ? 'Windows refuses to unlink an open file, so this cannot happen there' : false }, () => {
+  // The failure this exists for, and it only exists on POSIX: `reset` while
+  // `serve` is running. The process keeps the inode, so queries succeed,
+  // writes succeed, and every one of them is discarded when it exits. A
+  // readiness check that only runs SELECT 1 reports healthy throughout - which
+  // is what the deployed container actually did before this check existed.
+  const dir = mkdtempSync(join(tmpdir(), 'fl-readiness-'));
+  const path = join(dir, 'autopilot.db');
+  const store = new Store(path);
+
+  rmSync(path, { force: true });
+
+  // The query still works. That is the whole problem.
+  assert.equal((store.db.prepare('SELECT 1 as one').get() as { one: number }).one, 1);
+  assert.equal(store.fileMissing(), true, 'the deleted file must be detected');
+
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('an in-memory store is never reported as missing', () => {
+  const store = new Store(':memory:');
+  assert.equal(store.path, ':memory:');
+  assert.equal(store.fileMissing(), false);
+  store.close();
 });

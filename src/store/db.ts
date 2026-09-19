@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { id, now, fingerprint } from '../core/util.ts';
 import type {
@@ -313,8 +313,11 @@ export class OperationInFlightError extends Error {
 
 export class Store {
   readonly db: DatabaseSync;
+  /** Where this store was opened from. ':memory:' for an in-memory one. */
+  readonly path: string;
 
   constructor(path: string) {
+    this.path = path;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     // SQLite's default busy timeout is zero, so `serve` holding a write for a
@@ -435,6 +438,20 @@ export class Store {
          FROM audit WHERE ${where.join(' AND ')} ORDER BY at DESC, rowid DESC LIMIT ?`,
       )
       .all(...params) as unknown as AuditEvent[];
+  }
+
+  /**
+   * Is the file this store was opened from still on disk?
+   *
+   * On POSIX, deleting an open database leaves the process holding the inode:
+   * reads keep working, writes keep succeeding, and every one of them goes to
+   * a file with no directory entry. Nothing surfaces until the process exits
+   * and the data goes with it. `reset` while `serve` is running does exactly
+   * this, and without a check the server reports itself healthy the whole time.
+   */
+  fileMissing(): boolean {
+    if (this.path === ':memory:') return false;
+    return !existsSync(this.path);
   }
 
   /** How many of each kind of thing happened, most frequent first. */

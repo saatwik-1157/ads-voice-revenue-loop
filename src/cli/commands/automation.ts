@@ -2,6 +2,7 @@ import type { Command } from '../registry.ts';
 import { fail, reportCycles, stopOnSignal, write } from '../io.ts';
 import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler } from '../../scheduler.ts';
 import { createHttpServer } from '../../server/http.ts';
+import { runSafetyCheck } from '../../safety/monitor.ts';
 import { voiceWebhookUrl } from '../../orchestrator.ts';
 import type { Context } from '../../orchestrator.ts';
 import type { Args } from '../args.ts';
@@ -92,11 +93,33 @@ export const automationCommands: Command[] = [
         }
       });
 
+      // The fast safety loop. Separate interval on purpose: "is this campaign
+      // working" is worth answering slowly on plenty of data, and "is something
+      // going wrong right now" is worth answering often on almost none. Running
+      // both on one timer is what made the stop-loss weak - it was only checked
+      // once per evaluation interval.
+      const safetyMs = args.flags.safety ? parseDuration(args.flags.safety) : 60_000;
+      let safetyTimer: NodeJS.Timeout | null = null;
+      if (scheduling) {
+        write(`  safety check every ${formatDuration(safetyMs)}`);
+        safetyTimer = setInterval(() => {
+          try {
+            const report = runSafetyCheck(ctx);
+            for (const f of report.stops) write(`  SAFETY STOP  ${f.check}: ${f.detail}`);
+          } catch (err) {
+            // A safety loop that throws must not take the server with it.
+            write(`  safety check failed: ${(err as Error).message}`);
+          }
+        }, safetyMs);
+        safetyTimer.unref();
+      }
+
       if (scheduling) {
         const intervalMs = intervalFrom(ctx, args);
         write(`  evaluation cycle every ${formatDuration(intervalMs)}`);
         const handle = startScheduler(ctx, { intervalMs, onCycle: reportCycles });
         stopOnSignal(() => {
+          if (safetyTimer) clearInterval(safetyTimer);
           handle.stop();
           server.close();
         });

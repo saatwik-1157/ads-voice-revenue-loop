@@ -4,6 +4,7 @@ import { fail, write } from '../io.ts';
 import { runDemo } from '../../demo/e2e.ts';
 import { probeDispatchContract } from '../../voice/contract.ts';
 import { preflight } from '../../meta/preflight.ts';
+import { inspectSafety, formatSafety } from '../../safety/monitor.ts';
 import { generateBrief } from '../../brief/generator.ts';
 import { id, now } from '../../core/util.ts';
 import type { Lead } from '../../core/types.ts';
@@ -127,6 +128,56 @@ export const toolCommands: Command[] = [
           : '\nno failures. Nothing was created and nothing was spent.',
       );
       return failures ? 1 : 0;
+    },
+  },
+
+  {
+    name: 'safety',
+    usage: '[--engage --reason TEXT --by NAME] [--release --by NAME]',
+    summary: 'The fast safety checks, and the emergency stop',
+    run: (ctx, args) => {
+      const by = args.flags.by;
+
+      if (flagIsSet(args, 'engage')) {
+        if (!by) return Promise.resolve(fail('--engage needs --by "your name" for the audit trail.'));
+        const engaged = ctx.store.engageEmergencyStop({
+          trigger: 'manual',
+          reason: args.flags.reason ?? 'engaged by hand',
+          by,
+        });
+        ctx.store.audit(null, 'human', 'emergency_stop.engaged', { by, reason: args.flags.reason ?? null });
+        write(engaged ? 'EMERGENCY STOP ENGAGED' : 'already engaged; the original reason is kept');
+        write('No budget moves, no campaign publishes and no call is placed until this is released.');
+        write('Spend already running at Meta continues under its own daily budget and end date.');
+        return Promise.resolve(0);
+      }
+
+      if (flagIsSet(args, 'release')) {
+        if (!by) return Promise.resolve(fail('--release needs --by "your name" for the audit trail.'));
+        const released = ctx.store.releaseEmergencyStop(by);
+        if (released) ctx.store.audit(null, 'human', 'emergency_stop.released', { by });
+        write(released ? `released by ${by}` : 'the emergency stop was not engaged');
+        return Promise.resolve(0);
+      }
+
+      const stop = ctx.store.emergencyStop();
+      if (stop.engaged) {
+        write('AUTOPILOT PAUSED');
+        write(`  trigger   ${stop.trigger ?? 'unknown'}`);
+        write(`  reason    ${stop.reason ?? 'none recorded'}`);
+        write(`  since     ${stop.engagedAt ?? 'unknown'} (by ${stop.engagedBy ?? 'unknown'})`);
+        write('  state     safe - nothing was deleted, and no autonomous action is being taken');
+        write('\n  resume with: node src/cli.ts safety --release --by "your name"\n');
+      } else {
+        write('autopilot is ACTIVE\n');
+      }
+
+      const report = inspectSafety(ctx);
+      write(formatSafety(report));
+      if (report.stops.length && !stop.engaged) {
+        write(`\n${report.stops.length} condition(s) would engage the stop on the next safety pass.`);
+      }
+      return Promise.resolve(report.stops.length && !stop.engaged ? 1 : 0);
     },
   },
 ];

@@ -31,6 +31,18 @@ export async function dispatchLead(
    */
   at: Date = new Date(),
 ): Promise<DispatchResult> {
+  const stop = store.emergencyStop();
+  if (stop.engaged) {
+    // Deferred, not suppressed: the lead is fine and should be called once
+    // somebody has looked at why the system stopped.
+    store.audit(lead.runId, 'system', 'call.deferred', {
+      leadId: lead.leadId,
+      reason: 'emergency stop engaged',
+      trigger: stop.trigger,
+    });
+    return { status: 'deferred', leadId: lead.leadId, reason: `emergency stop engaged: ${stop.reason ?? ''}` };
+  }
+
   if (store.isSuppressed(lead.phoneE164)) {
     store.setLeadCallStatus(lead.leadId, 'suppressed');
     store.audit(lead.runId, 'system', 'call.suppressed', { leadId: lead.leadId, reason: 'suppression list' });

@@ -46,6 +46,15 @@ export async function publishCampaign(
   pageId: string,
   options: PublishOptions,
 ): Promise<PublishResult> {
+  const stop = store.emergencyStop();
+  if (stop.engaged) {
+    throw new GuardrailViolation(
+      'emergency_stop',
+      `the emergency stop is engaged (${stop.trigger ?? 'unknown'}): ${stop.reason ?? 'no reason recorded'}. ` +
+        `Nothing publishes until a person releases it.`,
+    );
+  }
+
   if (!store.hasApproval(runId, GATE_1)) {
     throw new GuardrailViolation('gate_1', `run ${runId} has no approved gate #1; nothing may be published`);
   }

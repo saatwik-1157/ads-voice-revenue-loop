@@ -212,3 +212,12 @@ export interface WebhookEventRow {
   processedAt: string | null;
   failureReason: string | null;
 }
+
+export interface EmergencyStopState {
+  engaged: boolean;
+  trigger: string | null;
+  reason: string | null;
+  detail: string | null;
+  engagedAt: string | null;
+  engagedBy: string | null;
+}

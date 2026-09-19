@@ -53,6 +53,11 @@ export async function runCycle(ctx: Context, runId: string, options: CycleOption
   const lease = options.leaseMs ?? DEFAULT_LEASE_MS;
   const lockName = runLockName(runId);
 
+  const stop = ctx.store.emergencyStop();
+  if (stop.engaged) {
+    return skip(runId, `emergency stop engaged (${stop.trigger ?? 'unknown'}): ${stop.reason ?? ''}`);
+  }
+
   // Two writers on one run would double-count a budget step and race on
   // pauses. `apply` takes the same lock, so a hand-run one and a scheduled
   // cycle queue behind each other instead of compounding.

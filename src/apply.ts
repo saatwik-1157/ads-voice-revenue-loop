@@ -51,6 +51,19 @@ export async function applyRecommendation(
 ): Promise<ApplyOutcome> {
   const g = ctx.guardrails;
   const at = options.now ?? new Date();
+
+  // The single place both the scheduler and a hand-run `apply` pass through, so
+  // it is the right place to honour the stop. Refusing here means no budget
+  // moves and no ad is paused or resumed while the system is halted.
+  const stop = ctx.store.emergencyStop();
+  if (stop.engaged) {
+    return {
+      kind: 'halted',
+      reason: `emergency stop engaged (${stop.trigger ?? 'unknown'}): ${stop.reason ?? 'no reason recorded'}`,
+      pausedAds: 0,
+    };
+  }
+
   const campaign = ctx.store.getCampaign(runId);
   if (!campaign) throw new Error(`run ${runId} has no campaign`);
 

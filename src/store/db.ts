@@ -12,6 +12,7 @@ import type {
   RunState,
   SpendPoint,
   WebhookEventRow,
+  EmergencyStopState,
 } from '../core/types.ts';
 
 const SCHEMA = `
@@ -179,6 +180,21 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   processed_at TEXT,
   failure_reason TEXT,
   UNIQUE (provider, provider_event_id)
+);
+
+-- One row, id 1. A file or an in-memory flag would not survive a restart and
+-- would not be visible to a second process; a stop that forgets itself when the
+-- scheduler is restarted is not a stop.
+CREATE TABLE IF NOT EXISTS emergency_stop (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  engaged INTEGER NOT NULL,
+  trigger TEXT,
+  reason TEXT,
+  detail TEXT,
+  engaged_at TEXT,
+  engaged_by TEXT,
+  released_at TEXT,
+  released_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS locks (
@@ -758,6 +774,97 @@ export class Store {
   }
 
   #inTransaction = false;
+
+  /** Revenue booked against a run, in minor units. */
+  revenueMinor(runId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(r.amount_minor), 0) AS total
+         FROM revenue r JOIN leads l ON l.lead_id = r.lead_id
+         WHERE l.run_id = ?`,
+      )
+      .get(runId) as { total: number };
+    return row.total;
+  }
+
+  /** The most recent cycles across every run - what the loop has been doing. */
+  recentCycles(limit = 10): Array<{ cycleId: string; runId: string; status: string; detail: string | null }> {
+    return this.db
+      .prepare(
+        `SELECT cycle_id as cycleId, run_id as runId, status, detail
+         FROM cycles ORDER BY started_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(limit) as never;
+  }
+
+  // --- emergency stop ----------------------------------------------------
+
+  /**
+   * Halt every autonomous mutation until a person releases it.
+   *
+   * Engaging is idempotent: a second trigger while already stopped does not
+   * overwrite the first, because the first is the one that explains why the
+   * system stopped. Nothing is deleted or paused remotely - spend at Meta
+   * continues under its own daily budget and end date. This stops *this system*
+   * from acting, which is the thing it can honestly promise.
+   */
+  engageEmergencyStop(input: { trigger: string; reason: string; detail?: unknown; by: string }): boolean {
+    const current = this.emergencyStop();
+    if (current.engaged) return false;
+    this.db
+      .prepare(
+        `INSERT INTO emergency_stop (id, engaged, trigger, reason, detail, engaged_at, engaged_by, released_at, released_by)
+         VALUES (1, 1, ?, ?, ?, ?, ?, NULL, NULL)
+         ON CONFLICT(id) DO UPDATE SET
+           engaged = 1, trigger = excluded.trigger, reason = excluded.reason, detail = excluded.detail,
+           engaged_at = excluded.engaged_at, engaged_by = excluded.engaged_by,
+           released_at = NULL, released_by = NULL`,
+      )
+      .run(input.trigger, input.reason, JSON.stringify(input.detail ?? null), now(), input.by);
+    return true;
+  }
+
+  releaseEmergencyStop(by: string): boolean {
+    const current = this.emergencyStop();
+    if (!current.engaged) return false;
+    this.db
+      .prepare('UPDATE emergency_stop SET engaged = 0, released_at = ?, released_by = ? WHERE id = 1')
+      .run(now(), by);
+    return true;
+  }
+
+  emergencyStop(): EmergencyStopState {
+    const row = this.db
+      .prepare(
+        `SELECT engaged, trigger, reason, detail, engaged_at as engagedAt, engaged_by as engagedBy,
+                released_at as releasedAt, released_by as releasedBy
+         FROM emergency_stop WHERE id = 1`,
+      )
+      .get() as
+      | {
+          engaged: number;
+          trigger: string | null;
+          reason: string | null;
+          detail: string | null;
+          engagedAt: string | null;
+          engagedBy: string | null;
+          releasedAt: string | null;
+          releasedBy: string | null;
+        }
+      | undefined;
+
+    if (!row || row.engaged !== 1) {
+      return { engaged: false, trigger: null, reason: null, detail: null, engagedAt: null, engagedBy: null };
+    }
+    return {
+      engaged: true,
+      trigger: row.trigger,
+      reason: row.reason,
+      detail: row.detail,
+      engagedAt: row.engagedAt,
+      engagedBy: row.engagedBy,
+    };
+  }
 
   // --- webhook events ----------------------------------------------------
 

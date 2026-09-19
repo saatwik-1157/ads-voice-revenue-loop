@@ -1,8 +1,7 @@
-# Status after Tier 1
+# Status after Tier 2
 
-Tier 1 of the implementation order in [`PROJECT_AUDIT.md`](PROJECT_AUDIT.md) — the five items that
-retire the most risk per unit of work. Phases 0 and 1 (audit and baseline) are complete;
-Tiers 2–4 are not started.
+Tiers 1 and 2 of the implementation order in [`PROJECT_AUDIT.md`](PROJECT_AUDIT.md). Phases 0 and 1
+(audit and baseline) are complete; Tiers 3 and 4 are not started.
 
 Everything below was measured, not asserted. Commands and their output are at the end.
 
@@ -17,6 +16,10 @@ Everything below was measured, not asserted. Commands and their output are at th
 | 1.3 | Transaction boundaries | D7 | done |
 | 1.4 | Fast safety loop | R1, Phase 11 | done |
 | 1.5 | Global emergency stop | R4, Phase 12 | done |
+| 2.1 | Authentication and roles on every route | S1, Phase 17 | done |
+| 2.2 | Rate limiting | S2, Phase 18 | done |
+| 2.3 | Liveness and readiness endpoints | R3, Phase 20 | done |
+| 2.4 | Structured logging with redaction | R6, Phase 19 | done |
 
 ### 1.1 — Integrity and migrations
 
@@ -92,6 +95,52 @@ budget and end date regardless of this process. The CLI says so rather than impl
 system cannot make. Nothing is deleted — a test asserts the campaign, its ads and the run state are
 all untouched.
 
+### 2.1 — Authentication and roles
+
+`GET /runs` and `GET /runs/:id` answered 200 to anyone who could reach the port, returning economics,
+recommendations and pending approvals. That was the highest-severity finding in the audit and the
+reason authentication was ordered ahead of the dashboard.
+
+`src/server/access.ts` gives two roles. `admin` writes (`POST /leads`, `POST /revenue`, approvals)
+and reads; `viewer` only reads. Tokens come from `FL_ADMIN_TOKEN` / `FL_VIEWER_TOKEN` via
+`x-fl-admin-token`, `x-fl-token` or `Authorization: Bearer`, compared with `timingSafeEqual` after a
+byte-length check. **An unset token authenticates nobody** — the failure mode where a blank
+environment variable matches a blank header would have opened every route at once. A wrong token
+returns 401 with nothing about what would have been right, and the attempt is audited. `serve` warns
+at startup, per route, when a token is missing.
+
+### 2.2 — Rate limiting
+
+Token buckets per route class: webhooks 120 burst / 10 per second, reads 60 / 2, writes 20 / 0.5,
+unauthenticated 10 / 0.2. The bucket map is bounded at 10,000 keys and evicts oldest, so the limiter
+cannot itself become the memory exhaustion it exists to prevent. In-memory and therefore per-process:
+documented in the code, and not sufficient behind more than one instance.
+
+### 2.3 — Health
+
+`/health` and `/health/live` are open and answer whether the process is up. `/health/ready` actually
+queries the database and counts recent webhook failures, and **returns 503** when either fails. The
+previous endpoint returned 200 unconditionally, which meant a load balancer could not tell a healthy
+process from a wedged one.
+
+An engaged emergency stop does **not** make the process unready, and that is deliberate: a stopped
+autopilot still has to accept webhooks, because revenue and opt-outs arrive that way and dropping
+them is the failure the stop exists to prevent. The state is reported in the body instead.
+
+### 2.4 — Structured logging
+
+`src/core/log.ts`, on stderr, leaving human-readable command output on stdout. `FL_LOG_FORMAT=json`
+for a pipeline, `FL_LOG_LEVEL` for verbosity. Logged: `http.request` (with a `requestId` echoed on
+the `x-request-id` response header), `provider.request` with latency, `autopilot.decision`, and
+`emergency_stop.engaged`.
+
+Redaction is enforced on the way out, in one place, rather than trusted to every call site. A field
+whose name looks like a secret is dropped entirely at any depth; phone numbers are masked to their
+last four digits; every value passes through `redact()`, which catches a token pasted into a
+free-text message where no field name would have flagged it; request logs record the path and never
+the query string. That last defence is a deny-list and cannot enumerate every name somebody will
+invent — it is the third of three, not the only one.
+
 ---
 
 ## Files changed
@@ -100,19 +149,26 @@ all untouched.
 |---|---|
 | `src/store/db.ts` | FKs, indexes, migration framework, `transaction()`, webhook event methods, emergency stop methods, `revenueMinor`, `recentCycles` |
 | `src/core/types.ts` | `WebhookEventRow`, `EmergencyStopState` |
-| `src/safety/monitor.ts` | **new** — the fast safety loop |
-| `src/server/http.ts` | Webhook recording on both routes, body hashing |
+| `src/safety/monitor.ts` | **new** — the fast safety loop; logs when the stop engages |
+| `src/server/access.ts` | **new** — roles, token comparison, refusals |
+| `src/server/ratelimit.ts` | **new** — bounded token-bucket limiter |
+| `src/core/log.ts` | **new** — structured logging and output-side redaction |
+| `src/server/http.ts` | Webhook recording on both routes, body hashing, auth and rate limiting on every route, liveness/readiness, request logging |
+| `src/meta/api.ts` | Provider latency and failures logged |
 | `src/pipeline/webhooks.ts` | Call outcome commits as one transaction |
 | `src/pipeline/dispatch.ts` | Defers while the stop is engaged |
 | `src/meta/publisher.ts` | Refuses while stopped; campaign and activation transactional |
 | `src/apply.ts` | Refuses while stopped |
-| `src/scheduler.ts` | Cycle skips while stopped |
+| `src/scheduler.ts` | Cycle skips while stopped; every decision logged |
 | `src/cli/commands/tools.ts` | `safety` command |
-| `src/cli/commands/automation.ts` | Fast loop in `serve`, cleanup on shutdown |
+| `src/cli/commands/automation.ts` | Fast loop in `serve`, cleanup on shutdown, per-route token warnings |
 | `tests/migrations.test.ts` | **new** — 6 tests |
 | `tests/webhook-events.test.ts` | **new** — 5 tests |
 | `tests/safety.test.ts` | **new** — 8 tests |
-| `tests/holdout.test.ts`, `tests/cli.test.ts`, `tests/idempotency.test.ts` | Fixtures corrected for the new constraints |
+| `tests/access.test.ts` | **new** — 11 tests |
+| `tests/logging.test.ts` | **new** — 11 tests |
+| `tests/holdout.test.ts`, `tests/cli.test.ts`, `tests/idempotency.test.ts`, `tests/http-hostile.test.ts` | Fixtures and expectations corrected for the new constraints |
+| `.env.example` | `FL_VIEWER_TOKEN`, `FL_LOG_FORMAT`, `FL_LOG_LEVEL`; the old text still described open read routes |
 | `docs/PROJECT_AUDIT.md`, `docs/BASELINE.md` | **new** |
 
 ---
@@ -122,7 +178,7 @@ all untouched.
 ```
 npm run typecheck     clean
 npm run lint          clean
-npm test              243 passed, 0 failed  (was 224 at baseline)
+npm test              265 passed, 0 failed  (was 224 at baseline)
 node src/cli.ts demo  green, working tree clean afterwards
 npm audit --omit=dev  0 vulnerabilities
 ```
@@ -136,13 +192,31 @@ node src/cli.ts safety                                           →  AUTOPILOT 
 node src/cli.ts safety --release --by "operator"                 →  released, loop resumes
 ```
 
+Tier 2 against a real `serve` process on port 8799, with `FL_LOG_FORMAT=json`:
+
+```
+GET  /health                                 →  200   (open)
+GET  /health/ready                           →  200   ready:true, checks run against the database
+GET  /runs            no token               →  401
+GET  /runs            wrong token            →  401   "needs a viewer token", nothing more
+GET  /runs            viewer token           →  200
+POST /revenue         viewer token           →  401   viewer cannot write
+GET  /runs            x15, unauthenticated   →  429 from the 10th, matching the 10-burst bucket
+response header                              →  x-request-id: req_dcb7efac25b34d00
+safety --engage, then GET /health/ready      →  200   autopilot.state "paused", with the reason
+```
+
+23 structured lines were written to stderr across that session. `grep` for either token value, and
+for the wrong token that was sent, returns **0 matches** — the check that the redaction is doing
+something, rather than the tests asserting it in isolation.
+
 ### Commands
 
 ```bash
 npm ci                      # install
 npm run typecheck           # tsc --noEmit
 npm run lint                # eslint
-npm test                    # 243 tests
+npm test                    # 265 tests
 npm run ci                  # all three
 node src/cli.ts demo        # end-to-end against mocks
 node src/cli.ts safety      # safety status + emergency stop state
@@ -178,21 +252,21 @@ number> --yes`, then a paused publish inspected in Ads Manager before activation
   two numbers against each other.
 - **The safety loop runs in the `serve` process.** If that process is down, nothing is checking. A
   separate worker is Tier 3 work.
-- **`GET /runs` and `GET /runs/:id` still have no authentication** (audit S1). Unchanged by this
-  tier, and the reason the audit puts authentication ahead of the dashboard.
-- **No rate limiting** (S2), no structured logging (R6), no real health/readiness endpoint (R3), no
-  circuit breaker (R2). All Tier 2.
+- **Rate limiting is per-process and in memory.** Correct for one instance, wrong behind a load
+  balancer, where each process would enforce the limit separately. Shared state is Tier 3 work.
+- **The logging deny-list cannot be complete.** It catches the field names in use today. A new field
+  called something the pattern does not match would be logged, which is why `redact()` runs on every
+  value as well and why nothing passes a raw request body to the logger.
+- **No circuit breaker** (R2). A provider that is failing is retried on every cycle. Tier 3.
 - **Still SQLite only** (D5). The repository abstraction and PostgreSQL are Tier 3.
+- **No dashboard and no HTTP API for one** (Tier 4). Everything is still CLI plus webhooks.
 
 ---
 
 ## Remaining work
 
-Tier 2 (before any live traffic beyond a first test): HTTP authentication and authorisation, rate
-limiting, structured logging and real health endpoints.
-
 Tier 3: repository/data-access layer then PostgreSQL, provider hardening (circuit breaker, health
-checks), revenue funnel expansion and richer attribution.
+checks, shared rate-limit state), revenue funnel expansion and richer attribution.
 
 Tier 4: the HTTP API the dashboard would need, then the dashboard itself, experiments engine,
 creative engine expansion, Docker, RBAC and multi-tenancy.

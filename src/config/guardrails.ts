@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isSupportedCurrency } from '../core/util.ts';
+import { log } from '../core/log.ts';
 import {
   classifyText,
   DEFAULT_EXCLUSION_RULES,
@@ -114,7 +115,21 @@ export class GuardrailConfigError extends Error {
 
 export function loadGuardrails(path = 'config/guardrails.json'): Guardrails {
   const full = resolve(process.cwd(), path);
-  if (!existsSync(full)) return DEFAULTS;
+  if (!existsSync(full)) {
+    // Falling back silently is how a deployment ends up spending against
+    // limits nobody chose. This was not hypothetical: the container image
+    // copied only `src`, so a deliberately lowered set of caps was absent and
+    // the defaults - four times higher - applied without a word.
+    log.warn('guardrails.defaults', {
+      path,
+      reason: 'file not found',
+      maxDailySpendMinor: DEFAULTS.maxDailySpendMinor,
+      maxTestBudgetMinor: DEFAULTS.maxTestBudgetMinor,
+      stopLossMinor: DEFAULTS.stopLossMinor,
+      currency: DEFAULTS.currency,
+    });
+    return DEFAULTS;
+  }
 
   let parsed: Partial<Guardrails>;
   try {

@@ -14,6 +14,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY src ./src
+# The control layer travels with the code. Leaving it out does not fail - it
+# falls back to defaults that are higher than anything anyone deliberately set,
+# which is the worst possible way for this file to be missing.
+COPY config ./config
 
 # The database, the mock ad-account state and generated previews all live here.
 # It must be a mounted volume: without one, every redeploy starts from an empty

@@ -10,7 +10,7 @@ import { MockVoiceProvider } from '../src/voice/mock.ts';
 import { intakeLead } from '../src/pipeline/intake.ts';
 import { dispatchLead } from '../src/pipeline/dispatch.ts';
 import { runCycle } from '../src/scheduler.ts';
-import { inspectSafety, runSafetyCheck } from '../src/safety/monitor.ts';
+import { inspectSafety, runSafetyCheck, enforceSafety } from '../src/safety/monitor.ts';
 import { now } from '../src/core/util.ts';
 import { GuardrailViolation } from '../src/config/guardrails.ts';
 import type { Context } from '../src/orchestrator.ts';
@@ -34,6 +34,17 @@ function stampAssets(brief: Brief): Brief {
     c.assetProvenance = 'manual';
   }
   return brief;
+}
+
+/** A context with nothing in it but a store - enough for the read-only checks. */
+function ctxWith(store: Store): Context {
+  return {
+    store,
+    guardrails: G,
+    meta: { kind: 'mock' },
+    voice: { kind: 'mock' },
+    env: { mode: 'mock', meta: { pageId: 'page_1' } },
+  } as unknown as Context;
 }
 
 async function liveRun(): Promise<{ ctx: Context; runId: string; brief: Brief }> {
@@ -99,13 +110,17 @@ test('repeated webhook failures engage the stop', async () => {
   // dialling people who have asked not to be called.
   const { ctx } = await liveRun();
   for (let i = 0; i < 6; i += 1) {
+    // Verified deliveries whose handler then broke. This fixture used to pass
+    // `signatureVerified: false` with reason 'signature verification failed',
+    // which asserted that refusing forgeries engages the stop - encoding a
+    // remote halt as the expected behaviour.
     const e = ctx.store.recordWebhookEvent({
       provider: 'omnidimension',
-      providerEventId: null,
+      providerEventId: `call_${i}`,
       payloadHash: `hash_${i}`,
-      signatureVerified: false,
+      signatureVerified: true,
     });
-    ctx.store.finishWebhookEvent(e.eventId, 'failed', 'signature verification failed');
+    ctx.store.finishWebhookEvent(e.eventId, 'failed', 'handler threw while recording the outcome');
   }
 
   const report = runSafetyCheck(ctx);
@@ -216,5 +231,131 @@ test('a warning is not a stop', async () => {
   assert.ok(report.findings.some((f) => f.severity === 'warn'), 'it is worth saying');
   assert.equal(report.stops.length, 0, 'but not worth halting for');
   assert.equal(ctx.store.emergencyStop().engaged, false);
+  ctx.store.close();
+});
+
+test('forged webhooks cannot halt the system', () => {
+  // The remote halt: webhookFailuresSince counted rejected signatures, which
+  // are written with status 'failed' like any other. Five unsigned POSTs in
+  // fifteen minutes crossed the threshold and engaged the emergency stop -
+  // with no credentials, from anyone who could reach the port.
+  const store = new Store(':memory:');
+  const ctx = ctxWith(store);
+
+  for (let i = 0; i < 20; i += 1) {
+    const rejected = store.recordWebhookEvent({
+      provider: 'meta',
+      providerEventId: null,
+      payloadHash: `forged-${i}`,
+      signatureVerified: false,
+    });
+    store.finishWebhookEvent(rejected.eventId, 'failed', 'signature verification failed');
+  }
+
+  const report = runSafetyCheck(ctx);
+  assert.equal(report.engaged, false, 'unsigned deliveries must not engage the stop');
+  assert.equal(store.emergencyStop().engaged, false);
+
+  // Reported, though - a burst is either a wrong secret or somebody probing,
+  // and an operator should see it.
+  const warned = report.findings.find((f) => f.check === 'webhook signatures');
+  assert.equal(warned?.severity, 'warn');
+
+  store.close();
+});
+
+test('deliveries that verified and then failed to process still stop it', () => {
+  // The other half: this check has to keep working, or losing revenue and
+  // opt-outs stops being noticed.
+  const store = new Store(':memory:');
+  const ctx = ctxWith(store);
+
+  for (let i = 0; i < 6; i += 1) {
+    const accepted = store.recordWebhookEvent({
+      provider: 'omnidimension',
+      providerEventId: `call-${i}`,
+      payloadHash: `hash-${i}`,
+      signatureVerified: true,
+    });
+    store.finishWebhookEvent(accepted.eventId, 'failed', 'handler threw');
+  }
+
+  const report = runSafetyCheck(ctx);
+  assert.equal(report.engaged, true);
+  assert.equal(store.emergencyStop().trigger, 'webhooks');
+
+  store.close();
+});
+
+test('a stop-loss trip pauses the campaign at Meta, not just this system', async () => {
+  // The most expensive defect found in this project.
+  //
+  // The safety loop runs every minute, the evaluation cycle every 24 hours, so
+  // the loop always tripped the stop-loss first. Engaging the stop then made
+  // runCycle skip, and the KILL branch in `apply` that pauses the campaign at
+  // the provider was never reached. The stop-loss fired, the system went quiet,
+  // and the ad set kept spending to its own end date.
+  const { ctx, runId } = await liveRun();
+  const campaign = ctx.store.getCampaign(runId)!;
+
+  const paused: string[] = [];
+  const realSetStatus = ctx.meta.setStatus.bind(ctx.meta);
+  ctx.meta.setStatus = async (objectId: string, status: 'ACTIVE' | 'PAUSED'): Promise<void> => {
+    if (status === 'PAUSED') paused.push(objectId);
+    await realSetStatus(objectId, status);
+  };
+
+  // Spend past the stop-loss with nothing to show for it.
+  ctx.store.recordSpend({
+    runId,
+    adId: 'ad_1',
+    spendMinor: G.stopLossMinor + 1000,
+    impressions: 1000,
+    clicks: 10,
+    leads: 1,
+    asOf: now(),
+  });
+
+  const report = await enforceSafety(ctx);
+
+  assert.equal(report.engaged, true, 'the stop should engage');
+  assert.ok(
+    paused.includes(campaign.campaignId),
+    'the campaign must be paused at the provider - stopping this system does not stop the spend',
+  );
+  assert.equal(ctx.store.getCampaign(runId)?.status, 'PAUSED');
+  assert.equal(ctx.store.getRun(runId)?.state, 'paused');
+
+  ctx.store.close();
+});
+
+test('the safety loop never resumes anything', async () => {
+  // It may only ever reduce spend. A loop that could resume would be a way for
+  // an automated system to restart spending without anyone looking at why it
+  // stopped.
+  const { ctx, runId } = await liveRun();
+
+  const statuses: string[] = [];
+  ctx.meta.setStatus = (objectId: string, status: 'ACTIVE' | 'PAUSED'): Promise<void> => {
+    statuses.push(status);
+    return Promise.resolve();
+  };
+
+  ctx.store.recordSpend({
+    runId,
+    adId: 'ad_1',
+    spendMinor: G.stopLossMinor + 1000,
+    impressions: 1000,
+    clicks: 10,
+    leads: 1,
+    asOf: now(),
+  });
+  await enforceSafety(ctx);
+  // And again, now that it is already engaged.
+  await enforceSafety(ctx);
+
+  assert.equal(statuses.includes('ACTIVE'), false, 'the safety loop must never send ACTIVE');
+  assert.equal(statuses.filter((s) => s === 'PAUSED').length, 1, 'and must not re-pause every pass');
+
   ctx.store.close();
 });

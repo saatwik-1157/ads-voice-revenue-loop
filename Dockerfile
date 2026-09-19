@@ -18,6 +18,10 @@ COPY src ./src
 # falls back to defaults that are higher than anything anyone deliberately set,
 # which is the worst possible way for this file to be missing.
 COPY config ./config
+# Same reasoning as config/: read at runtime, and its absence is silent. Without
+# it every campaign publishes machine-rendered imagery instead of the reviewed
+# library, and the provenance line says `rendered` with nothing to explain why.
+COPY assets ./assets
 
 # The database, the mock ad-account state and generated previews all live here.
 # It must be a mounted volume: without one, every redeploy starts from an empty

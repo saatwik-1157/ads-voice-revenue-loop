@@ -18,6 +18,11 @@ services:
       PORT: 8787
       FL_LOG_FORMAT: json
       PUBLIC_BASE_URL: https://${DOMAIN}
+      # Caddy is genuinely in front here and the app port is not published, so
+      # X-Forwarded-For can only have been set by Caddy. Without this every
+      # anonymous caller shares one rate-limit bucket keyed on Caddy's address.
+      # Do not set it anywhere the app is reachable directly.
+      FL_TRUST_PROXY: 'true'
     volumes:
       # Named volume, not a bind mount: the spend and revenue history the
       # decision engine reasons over lives here and has to survive a redeploy.
@@ -26,6 +31,12 @@ services:
     # routes are never exposed on plain HTTP even if a firewall rule is wrong.
     expose:
       - '8787'
+    # A cycle in flight finishes before the process exits. Docker's default is
+    # 10 seconds, which is not enough for a cycle waiting on the Meta API: it
+    # gets SIGKILLed, the `finally` that releases the run lock never runs, and
+    # the restarted container is refused the lock for the rest of its 10-minute
+    # lease while the cycles row sits at 'running' forever.
+    stop_grace_period: 90s
 
   caddy:
     image: caddy:2-alpine

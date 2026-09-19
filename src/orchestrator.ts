@@ -1,3 +1,4 @@
+import { dirname, join } from 'node:path';
 import { Store } from './store/db.ts';
 import { env, assertLiveCredentials, type Env } from './config/env.ts';
 import { loadGuardrails, type Guardrails } from './config/guardrails.ts';
@@ -42,7 +43,15 @@ export function createContext(overrides: Partial<Context> = {}): Context {
           adAccountId: e.meta.adAccountId,
           apiVersion: e.meta.apiVersion,
         })
-      : new MockMetaProvider(42, e.dbPath === ':memory:' ? null : 'data/mock-meta.json'));
+      : new MockMetaProvider(
+          42,
+          // Beside the database, not beside the working directory. `reset`
+          // derives this path from FL_DB_PATH; a hardcoded 'data/' agreed with
+          // it only by coincidence, so with the database anywhere else reset
+          // wiped it and left the simulated ad account behind, and the next
+          // demo resumed on the previous run's spend.
+          e.dbPath === ':memory:' ? null : join(dirname(e.dbPath), 'mock-meta.json'),
+        ));
 
   const voice =
     overrides.voice ??

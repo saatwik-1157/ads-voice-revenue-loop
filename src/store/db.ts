@@ -965,9 +965,37 @@ export class Store {
   }
 
   /** How many deliveries failed since a given time. Feeds the health check. */
+  /**
+   * Deliveries we accepted and then failed to process.
+   *
+   * `signature_verified = 1` is the whole point. A rejected forgery is also
+   * written with status 'failed', and counting those here let anyone who could
+   * reach the port halt the system: five unsigned POSTs in fifteen minutes
+   * crossed the safety loop's threshold and engaged the emergency stop, with
+   * no credentials at all. Refusing a forgery is this system working, not
+   * failing. Only a delivery whose signature checked out and whose handler
+   * then broke means revenue and opt-outs may not be landing.
+   */
   webhookFailuresSince(sinceIso: string): number {
     const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM webhook_events WHERE status = 'failed' AND received_at >= ?")
+      .prepare(
+        "SELECT COUNT(*) AS n FROM webhook_events WHERE status = 'failed' AND signature_verified = 1 AND received_at >= ?",
+      )
+      .get(sinceIso) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Deliveries refused at the signature.
+   *
+   * Worth surfacing and never worth stopping for: a burst means either a
+   * misconfigured secret, which an operator should fix, or somebody probing,
+   * which is not a reason to stop spending. Kept apart from the count above so
+   * that distinction cannot be lost again.
+   */
+  webhookRejectionsSince(sinceIso: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM webhook_events WHERE signature_verified = 0 AND received_at >= ?')
       .get(sinceIso) as { n: number };
     return row.n;
   }

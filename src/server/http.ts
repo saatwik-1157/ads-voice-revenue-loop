@@ -40,6 +40,23 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * The address to rate-limit an anonymous caller by.
+ *
+ * Only reads X-Forwarded-For when FL_TRUST_PROXY is set, and takes the
+ * left-most entry, which is the originating client as every proxy in the chain
+ * appends. With no proxy configured the header is ignored entirely, because
+ * anything a client can set is not an identity.
+ */
+export function clientAddress(req: IncomingMessage): string | undefined {
+  if (process.env.FL_TRUST_PROXY === 'true') {
+    const forwarded = req.headers['x-forwarded-for'];
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress ?? undefined;
+}
+
 export function createHttpServer(ctx: Context) {
   // One limiter per server, so tests and separate instances do not share state.
   const limiter = new RateLimiter();
@@ -113,7 +130,15 @@ async function handle(
   const route = `${req.method} ${url.pathname}`;
 
   const who = identify(req);
-  const caller = who ? `${who.role}` : (req.socket.remoteAddress ?? 'unknown');
+  // Behind the shipped Caddy the socket address is always the proxy's, so every
+  // anonymous caller on the internet shared one bucket - and one flood could
+  // starve the genuine Meta and OmniDimension deliveries that carry leads,
+  // revenue and opt-outs.
+  //
+  // X-Forwarded-For is only trusted when FL_TRUST_PROXY says a proxy is in
+  // front. Trusting it unconditionally would be worse than the bug: any caller
+  // could then pick their own bucket, or someone else's, by setting a header.
+  const caller = who ? `${who.role}` : (clientAddress(req) ?? 'unknown');
 
   /**
    * Refuse if this caller is asking too often. Keyed on identity when there is
@@ -140,6 +165,9 @@ async function handle(
 
   // Meta webhook subscription handshake.
   if (route === 'GET /webhooks/meta') {
+    // This sat above every limiter call, so the one route Meta hits without a
+    // signature had no rate limit at all.
+    if (limited('webhook')) return;
     const mode = url.searchParams.get('hub.mode');
     const token = url.searchParams.get('hub.verify_token');
     const challenge = url.searchParams.get('hub.challenge') ?? '';
@@ -175,7 +203,9 @@ async function handle(
       // when the process exits. Reporting healthy through that is worse than
       // failing, because nothing else will notice either.
       checks.database = ctx.store.fileMissing()
-        ? { ok: false, detail: `${ctx.store.path} no longer exists; restart this process` }
+        ? // No path in the body: /health/ready is open, and an absolute
+          // filesystem path is free reconnaissance. The log line has it.
+          { ok: false, detail: 'the database file no longer exists; restart this process' }
         : { ok: true };
     } catch (err) {
       checks.database = { ok: false, detail: (err as Error).message.slice(0, 200) };

@@ -126,14 +126,18 @@ test('liveness needs no credentials; readiness reports something real', async ()
 
 test('readiness fails when the system is not ready, which is the entire point', async () => {
   // The old /health returned a static ok and could not report a problem.
+  //
+  // Verified deliveries whose handler then broke. Using rejected signatures
+  // here, as this fixture used to, meant anyone who could reach the port could
+  // drive readiness to 503 by posting garbage.
   for (let i = 0; i < 6; i += 1) {
     const e = store.recordWebhookEvent({
       provider: 'omnidimension',
-      providerEventId: null,
+      providerEventId: `ready_call_${i}`,
       payloadHash: `h${i}`,
-      signatureVerified: false,
+      signatureVerified: true,
     });
-    store.finishWebhookEvent(e.eventId, 'failed', 'signature verification failed');
+    store.finishWebhookEvent(e.eventId, 'failed', 'handler threw while recording the outcome');
   }
 
   const res = await get('/health/ready');

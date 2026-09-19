@@ -2,7 +2,7 @@ import type { Command } from '../registry.ts';
 import { fail, reportCycles, stopOnSignal, write } from '../io.ts';
 import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler } from '../../scheduler.ts';
 import { createHttpServer } from '../../server/http.ts';
-import { runSafetyCheck } from '../../safety/monitor.ts';
+import { enforceSafety } from '../../safety/monitor.ts';
 import { noTokensConfigured } from '../../server/access.ts';
 import { voiceWebhookUrl } from '../../orchestrator.ts';
 import type { Context } from '../../orchestrator.ts';
@@ -105,18 +105,29 @@ export const automationCommands: Command[] = [
       // going wrong right now" is worth answering often on almost none. Running
       // both on one timer is what made the stop-loss weak - it was only checked
       // once per evaluation interval.
-      const safetyMs = args.flags.safety ? parseDuration(args.flags.safety) : 60_000;
+      // A bare `--safety` arrives as the string 'true'. Parsing that threw after
+      // the server was already listening, which surfaced as an internal-error
+      // stack trace rather than a usage message.
+      const safetyFlag = args.flags.safety;
+      if (safetyFlag === 'true') {
+        return fail('--safety needs a duration, e.g. --safety 30s');
+      }
+      const safetyMs = safetyFlag ? parseDuration(safetyFlag) : 60_000;
       let safetyTimer: NodeJS.Timeout | null = null;
       if (scheduling) {
         write(`  safety check every ${formatDuration(safetyMs)}`);
         safetyTimer = setInterval(() => {
-          try {
-            const report = runSafetyCheck(ctx);
-            for (const f of report.stops) write(`  SAFETY STOP  ${f.check}: ${f.detail}`);
-          } catch (err) {
-            // A safety loop that throws must not take the server with it.
-            write(`  safety check failed: ${(err as Error).message}`);
-          }
+          // The loop can now pause a campaign at the provider, so it is async.
+          // Nothing awaits this timer, so the rejection has to be caught here
+          // or it becomes an unhandled rejection that takes the process down.
+          void enforceSafety(ctx)
+            .then((report) => {
+              for (const f of report.stops) write(`  SAFETY STOP  ${f.check}: ${f.detail}`);
+            })
+            .catch((err: unknown) => {
+              // A safety loop that throws must not take the server with it.
+              write(`  safety check failed: ${(err as Error).message}`);
+            });
         }, safetyMs);
         safetyTimer.unref();
       }
@@ -124,7 +135,12 @@ export const automationCommands: Command[] = [
       if (scheduling) {
         const intervalMs = intervalFrom(ctx, args);
         write(`  evaluation cycle every ${formatDuration(intervalMs)}`);
-        const handle = startScheduler(ctx, { intervalMs, onCycle: reportCycles });
+        // `immediate` matters more here than it looks. Without it the first cycle
+        // waits a whole evaluationIntervalHours - 24 by default - and
+        // `restart: unless-stopped` means any crash or redeploy starts that wait
+        // again. A container restarting daily would never evaluate anything,
+        // and the only symptom is an empty cycles table.
+        const handle = startScheduler(ctx, { intervalMs, onCycle: reportCycles, immediate: true });
         stopOnSignal(() => {
           if (safetyTimer) clearInterval(safetyTimer);
           handle.stop();
@@ -134,7 +150,17 @@ export const automationCommands: Command[] = [
         return 0;
       }
 
-      await new Promise(() => {});
+      // Webhooks only, no cycle loop. This still needs a signal handler: as
+      // PID 1 in a container, a process with no SIGTERM listener does not get
+      // the default disposition, so `docker stop` blocks for the whole grace
+      // period and then SIGKILLs - on every redeploy.
+      await new Promise<void>((resolve) => {
+        stopOnSignal(() => {
+          if (safetyTimer) clearInterval(safetyTimer);
+          server.close();
+          resolve();
+        });
+      });
       return 0;
     },
   },

@@ -20,8 +20,12 @@ services:
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    # The token identifies one named tunnel and is a credential: it goes in
-    # .env, never on the command line, where it would land in shell history.
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env - create the tunnel in the Cloudflare Zero Trust dashboard}
+    # The token identifies one named tunnel and is a credential. It goes in the
+    # environment, not on the command line: an argv is visible to every local
+    # user through `ps`, and to anyone who can run `docker inspect`. cloudflared
+    # reads TUNNEL_TOKEN itself.
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env - create the tunnel in the Cloudflare Zero Trust dashboard}
+    command: tunnel --no-autoupdate run
     depends_on:
       - app

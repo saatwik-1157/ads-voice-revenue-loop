@@ -4,26 +4,20 @@
 {$DOMAIN} {
 	encode gzip
 
-	# Liveness is open by design, and a load balancer or uptime check needs it
-	# without a token. It says only that the process is up.
-	# /health/ready is left on the normal path below - it reports database and
-	# webhook state, which is not something to hand to anyone who asks.
-	handle /health {
-		reverse_proxy app:8787
-	}
-
-	# The webhook routes authenticate by signature, not by token, and must stay
-	# reachable by Meta and OmniDimension. They are separated here only so the
-	# request body is passed through untouched - the HMAC is computed over the
-	# raw bytes, and anything that rewrites the body breaks verification.
-	handle /webhooks/* {
-		reverse_proxy app:8787 {
-			header_up X-Forwarded-For {remote_host}
-		}
-	}
-
-	handle {
-		reverse_proxy app:8787
+	# Everything goes to the app, including /health, /health/live and
+	# /health/ready - all three are open by design so an uptime check or a load
+	# balancer can poll them without a token. The app decides what each says.
+	#
+	# Nothing here rewrites the request body, which matters: the webhook HMAC is
+	# computed over the raw bytes, and a directive that touched the body would
+	# break verification for every delivery.
+	#
+	# X-Forwarded-For is set so the app can rate-limit anonymous callers by their
+	# own address rather than by this proxy's. The app only trusts it when
+	# FL_TRUST_PROXY=true, which the compose file sets, because a header any
+	# client can write is not an identity on its own.
+	reverse_proxy app:8787 {
+		header_up X-Forwarded-For {remote_host}
 	}
 
 	# The app already logs every request as JSON on stderr with a request id.

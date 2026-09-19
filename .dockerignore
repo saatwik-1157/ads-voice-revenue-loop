@@ -20,4 +20,3 @@ docs/
 eslint.config.js
 tsconfig.json
 *.md
-!README.md

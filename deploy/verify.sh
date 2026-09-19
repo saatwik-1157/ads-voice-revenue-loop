@@ -53,7 +53,17 @@ resolve() {
     addr="$(dig +short "$name" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)"
   fi
   if [[ -z "$addr" ]] && command -v nslookup >/dev/null 2>&1; then
-    addr="$(nslookup "$name" 2>/dev/null | awk '/^Address: /{print $2}' | tail -1)"
+    # Windows nslookup prints the resolver first ("Address: 192.168.1.1"), then
+    # the answer as "Addresses:" plus indented continuation lines when the name
+    # has more than one A record. Matching "^Address: " alone returned the
+    # resolver and reported it as the site's address. Take everything after the
+    # blank line that separates the resolver from the answer, and accept both
+    # the singular and plural forms.
+    addr="$(nslookup "$name" 2>/dev/null | awk '
+      /^$/ { past_resolver = 1; next }
+      past_resolver && /^Address(es)?: /  { sub(/^Address(es)?: +/, ""); print; next }
+      past_resolver && /^[[:space:]]+[0-9.]+$/ { gsub(/[[:space:]]/, ""); print }
+    ' | grep -E "^[0-9.]+$" | head -1)"
   fi
   printf '%s' "$addr"
 }
@@ -127,6 +137,12 @@ for route in /runs /runs/probe-does-not-exist; do
     # 000 is "never connected", which is a different problem from an open
     # route. Reporting it as exposed sends you looking in the wrong place.
     no "GET ${route} -> no connection (nothing is answering on 443)"
+  elif [[ "$code" == "429" ]]; then
+    # Rate limited before the route could answer. That is the access-control
+    # layer working; calling it an exposed route is the opposite of the truth.
+    # Anonymous callers share one small bucket, so a second run inside a minute
+    # lands here.
+    meh "GET ${route} -> 429, rate limited - wait a minute and re-run"
   else
     no "GET ${route} anonymous -> ${code} - EXPECTED 401, this route is exposed"
   fi
@@ -140,6 +156,8 @@ for route in /leads /revenue; do
     ok "POST ${route} anonymous -> 401"
   elif [[ "$code" == "000" ]]; then
     no "POST ${route} -> no connection"
+  elif [[ "$code" == "429" ]]; then
+    meh "POST ${route} -> 429, rate limited - wait a minute and re-run"
   else
     no "POST ${route} anonymous -> ${code} - EXPECTED 401, this route is writable"
   fi

@@ -40,7 +40,7 @@ if [[ -f .env ]]; then
   say ".env exists - leaving it alone"
   # DOMAIN still has to be right, because compose reads this file for
   # interpolation. Tell rather than rewrite.
-  if ! grep -qE "^DOMAIN=${DOMAIN}$" .env; then
+  if ! grep -qxF "DOMAIN=${DOMAIN}" .env; then
     echo "   WARNING: .env does not contain DOMAIN=${DOMAIN}"
     echo "   Set it before continuing, or compose will request a certificate for the wrong name."
   fi
@@ -55,6 +55,13 @@ else
   sed -i "s|^FL_VIEWER_TOKEN=.*|FL_VIEWER_TOKEN=$(gen)|" .env
   sed -i "s|^FL_MODE=.*|FL_MODE=mock|" .env
   chmod 600 .env
+  # Under sudo this file would otherwise be root:root 0600, and every command
+  # this script goes on to print - including `docker compose`, which treats
+  # env_file as required - fails for the operator who ran it.
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    chown "$SUDO_USER" .env
+    echo "   .env owned by $SUDO_USER, mode 600"
+  fi
   echo "   tokens generated, mode left at mock"
 fi
 

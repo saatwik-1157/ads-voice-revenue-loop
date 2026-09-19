@@ -91,6 +91,19 @@ export function inspectSafety(ctx: Context, options: SafetyOptions = {}): Safety
 
   // --- inbound webhook health ---------------------------------------------
   const since = new Date(at.getTime() - windowMs).toISOString();
+  // Rejections are reported and never stop anything. Letting an unauthenticated
+  // caller engage the emergency stop by posting garbage is a remote halt, which
+  // is exactly what counting them here used to allow.
+  const rejections = ctx.store.webhookRejectionsSince(since);
+  if (rejections >= failureThreshold) {
+    findings.push({
+      check: 'webhook signatures',
+      severity: 'warn',
+      detail: `${rejections} delivery(s) refused at the signature in the last ${Math.round(windowMs / 60_000)} minutes - a wrong secret, or somebody probing`,
+      evidence: { rejections, since },
+    });
+  }
+
   const failures = ctx.store.webhookFailuresSince(since);
   if (failures >= failureThreshold) {
     // Revenue and opt-outs both arrive by webhook. Deciding anything while
@@ -99,7 +112,7 @@ export function inspectSafety(ctx: Context, options: SafetyOptions = {}): Safety
     findings.push({
       check: 'webhooks',
       severity: 'stop',
-      detail: `${failures} webhook deliveries failed in the last ${Math.round(windowMs / 60_000)} minutes`,
+      detail: `${failures} verified webhook deliveries failed to process in the last ${Math.round(windowMs / 60_000)} minutes`,
       evidence: { failures, windowMinutes: Math.round(windowMs / 60_000), since },
     });
   } else if (failures > 0) {
@@ -166,4 +179,51 @@ export function formatSafety(report: SafetyReport): string {
   const lines = report.findings.map((f) => `  ${mark[f.severity]} ${f.check.padEnd(18)} ${f.detail}`);
   if (lines.length === 0) lines.push('  OK   nothing to report');
   return lines.join('\n');
+}
+
+/** Triggers that mean money is being lost, not that something is misbehaving. */
+const SPEND_TRIGGERS = new Set(['stop-loss', 'test budget']);
+
+/**
+ * Engage the stop, and for a spend trigger actually stop the spend.
+ *
+ * The emergency stop halts *this system*. On its own that was worse than
+ * useless for a stop-loss: the safety loop runs every minute and the evaluation
+ * cycle every twenty-four hours, so the loop always tripped first, `runCycle`
+ * then skipped because the stop was engaged, and the KILL branch in `apply`
+ * that pauses the campaign at Meta was never reached. The stop-loss fired, the
+ * system went quiet, and the ad set kept spending to its own end date.
+ *
+ * So the loop pauses the campaign itself. This is the one outward action the
+ * safety path takes, and it is only ever a pause - never a resume, never a
+ * budget change.
+ */
+export async function enforceSafety(ctx: Context, options: SafetyOptions = {}): Promise<SafetyReport> {
+  const before = ctx.store.emergencyStop().engaged;
+  const report = runSafetyCheck(ctx, options);
+  if (!report.engaged || before) return report;
+
+  const trigger = ctx.store.emergencyStop().trigger ?? '';
+  if (!SPEND_TRIGGERS.has(trigger)) return report;
+
+  for (const run of ctx.store.listRuns().filter((r) => r.state === 'live')) {
+    const campaign = ctx.store.getCampaign(run.runId);
+    if (!campaign || campaign.status === 'PAUSED') continue;
+    try {
+      await ctx.meta.setStatus(campaign.campaignId, 'PAUSED');
+      ctx.store.setCampaignStatus(campaign.campaignId, 'PAUSED');
+      ctx.store.setRunState(run.runId, 'paused', `safety loop: ${trigger}`);
+      ctx.store.audit(run.runId, 'system', 'campaign.paused', { reason: trigger, by: 'safety-loop' });
+      log.warn('safety.campaign_paused', { runId: run.runId, campaignId: campaign.campaignId, trigger });
+    } catch (err) {
+      // Worth an audit row and a loud log, not a throw: the stop is engaged
+      // either way, and a provider outage must not stop the loop running.
+      ctx.store.audit(run.runId, 'system', 'campaign.pause_failed', {
+        reason: trigger,
+        error: (err as Error).message,
+      });
+      log.error('safety.pause_failed', { runId: run.runId, error: (err as Error).message });
+    }
+  }
+  return report;
 }

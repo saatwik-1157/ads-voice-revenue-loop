@@ -2,7 +2,7 @@ import type { Env } from '../config/env.ts';
 import type { Guardrails } from '../config/guardrails.ts';
 import { MetaApiProvider } from './api.ts';
 import { MetaApiError } from './provider.ts';
-import { isSupportedCurrency } from '../core/util.ts';
+import { isSupportedCurrency, redact } from '../core/util.ts';
 
 /**
  * Read-only checks against a real ad account, before anything is published.
@@ -91,7 +91,9 @@ export async function preflight(options: PreflightOptions): Promise<PreflightRes
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const res = await fetchImpl(url, { headers: { Authorization: `Bearer ${env.meta.accessToken}` } });
     const text = await res.text();
-    if (!res.ok) throw new MetaApiError(res.status, text);
+    // redact() as in the real client (src/meta/api.ts). A Graph error body can
+    // echo back what was sent, and this text reaches operator stdout and CI logs.
+    if (!res.ok) throw new MetaApiError(res.status, redact(text));
     return JSON.parse(text) as Record<string, unknown>;
   };
 

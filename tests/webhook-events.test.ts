@@ -182,7 +182,24 @@ test('the event log can be filtered, which is the point of keeping it', () => {
   assert.ok(omni.length >= 2);
   assert.ok(omni.every((e) => e.provider === 'omnidimension'));
 
-  // Feeds the health check: how bad is it right now.
-  assert.ok(store.webhookFailuresSince('2000-01-01T00:00:00.000Z') >= 1);
+  // Feeds the health check and the safety loop, and the two counters are kept
+  // apart on purpose. A refused forgery is this system working; counting it as
+  // a failure let an unauthenticated caller engage the emergency stop.
+  assert.ok(store.webhookRejectionsSince('2000-01-01T00:00:00.000Z') >= 1, 'the rejection was recorded');
+  assert.equal(
+    store.webhookFailuresSince('2000-01-01T00:00:00.000Z'),
+    0,
+    'a rejected signature is not a processing failure',
+  );
+
+  // And a delivery that verified and then broke does count.
+  const broke = store.recordWebhookEvent({
+    provider: 'omnidimension',
+    providerEventId: 'call_that_broke',
+    payloadHash: 'hash_that_broke',
+    signatureVerified: true,
+  });
+  store.finishWebhookEvent(broke.eventId, 'failed', 'handler threw');
+  assert.equal(store.webhookFailuresSince('2000-01-01T00:00:00.000Z'), 1);
   assert.equal(store.webhookFailuresSince('2999-01-01T00:00:00.000Z'), 0);
 });

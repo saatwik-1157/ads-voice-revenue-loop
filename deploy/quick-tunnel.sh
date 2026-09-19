@@ -35,7 +35,10 @@ if ! docker network inspect "$NET" >/dev/null 2>&1; then
   echo "created network $NET"
 fi
 
-if ! docker network inspect "$NET" --format '{{range .Containers}}{{.Name}} {{end}}' | grep -qw "$APP"; then
+# Exact name. `grep -qw` treats '-' as a boundary, so a container called
+# fl-live-2 already on the network satisfied the test for fl-live, and the real
+# one was never connected.
+if ! docker network inspect "$NET" --format '{{range .Containers}}{{println .Name}}{{end}}' | grep -qxF "$APP"; then
   docker network connect "$NET" "$APP"
   echo "connected $APP to $NET"
 fi
@@ -50,12 +53,18 @@ docker run -d --name "$TUNNEL" --network "$NET" cloudflare/cloudflared:latest \
 URL_RE='https://[a-z0-9]+(-[a-z0-9]+)+\.trycloudflare\.com'
 echo -n "waiting for the hostname"
 for _ in $(seq 1 60); do
-  URL="$(docker logs "$TUNNEL" 2>&1 | grep -oE "$URL_RE" | head -1 || true)"
+  LOG="$(docker logs "$TUNNEL" 2>&1 || true)"
+  URL="$(printf '%s' "$LOG" | grep -oE "$URL_RE" | head -1 || true)"
   [[ -n "$URL" ]] && break
-  # A tunnel that cannot reach Cloudflare should say so rather than time out
-  # silently after a minute.
-  if docker logs "$TUNNEL" 2>&1 | grep -q "failed to sufficiently increase receive buffer\|ERR .*Cannot determine"; then
-    :
+  # A container that has already exited will never print a hostname; waiting the
+  # full minute for it only delays the error. (The previous version of this
+  # check was an `if ... then : fi` that did nothing at all.)
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$TUNNEL" 2>/dev/null)" != "true" ]]; then
+    echo
+    echo "the tunnel container exited. What it said:" >&2
+    printf '%s
+' "$LOG" | tail -10 >&2
+    exit 1
   fi
   echo -n '.'
   sleep 1

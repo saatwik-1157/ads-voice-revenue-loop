@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 275 tests: guardrails, the loop, retries, scheduling, creative, access, logging, hostile input
+npm test                      # 291 tests: guardrails, the loop, retries, scheduling, creative, access, logging, hostile input
 ```
 
 ### Credentials
@@ -94,7 +94,7 @@ node src/cli.ts approvals                           # what is waiting on a human
 node src/cli.ts assets [runId] [--force]            # produce + upload artwork
 node src/cli.ts approve <approvalId> --by "Nitesh"  # phase C
 node src/cli.ts reject <approvalId> --by "Nitesh" --reason "..."
-node src/cli.ts publish <runId> --budget 700 --days 5 --activate
+node src/cli.ts publish <runId> --budget 200 --days 5 --activate
 node src/cli.ts sync <runId>                        # pull Meta insights
 node src/cli.ts economics <runId>                   # the funnel numbers on their own
 node src/cli.ts review <runId>                      # phase G: economics + decision
@@ -112,9 +112,10 @@ node src/cli.ts preflight [--lead-form ID]          # read-only checks on the re
 node src/cli.ts safety [--engage|--release --by N]  # fast safety checks + the emergency stop
 ```
 
-`npm run ci` runs lint, typecheck and tests together - the same three things CI runs on every push.
+`npm run ci` runs lint, typecheck and tests. CI on every push runs those three plus the demo and a
+check that the working tree is still clean afterwards.
 
-Money is passed to the CLI in major units (`--budget 700` = ₹700/day) and stored in minor units
+Money is passed to the CLI in major units (`--budget 200` = ₹200/day) and stored in minor units
 everywhere internally, so there is no floating-point drift in the economics.
 
 Those minor units are 1/100 of a major unit, everywhere. Meta takes budgets in the account currency's
@@ -134,7 +135,7 @@ you are not looking at it.
 ```bash
 node src/cli.ts brief && node src/cli.ts approvals          # note the approval id
 node src/cli.ts approve <approvalId> --by "Nitesh"
-node src/cli.ts publish --budget 700 --days 5 --activate
+node src/cli.ts publish --budget 200 --days 5 --activate
 node src/cli.ts sync                                        # advances one simulated day
 
 FL_ADMIN_TOKEN=devtoken node src/cli.ts serve               # in another terminal
@@ -289,7 +290,7 @@ except the winner" are the same statement. `planScale` treats them that way:
 
 - The step is `maxBudgetStepFactor` (1.3× by default), capped at `maxDailySpendMinor`, and split into a proven
   share and a holdout share — reported, audited, and shown on the CLI:
-  `budget raised to INR 650.00/day (INR 520.00 proven + INR 130.00 holdout across 5 test creative(s))`
+  `budget raised to INR 260.00/day (INR 208.00 proven + INR 52.00 holdout across 2 test creative(s))`
 - The holdout is drawn from the creatives still being tested (`KEEP`/`ITERATE`). `apply` refuses to
   pause any of them and writes an `ad.pause_refused` audit event if something tries.
 - **If there is nothing left to test, the scale step goes to gate #2 instead of proceeding.** A
@@ -326,7 +327,7 @@ the gate summary reports what produced each image, and generated artwork adds an
 confirm:
 
 ```
-Artwork: 6 rendered
+Artwork: 2 rendered
 CONFIRM before approving (1):
   - artwork is auto-generated, not cleared by a person - look at the previews before approving
 ```
@@ -495,7 +496,7 @@ It exits 0 only when both gates are clear, so it works as a guard in a script. B
 not live-ready is the normal state; the output says so rather than leaving you to wonder.
 
 **Step 0 is a public URL.** Meta will not deliver leadgen webhooks over plain HTTP, and
-`contract-test` refuses a `PUBLIC_BASE_URL` that is not `https://`, because a provider cannot reach
+`contract-test --live` refuses a `PUBLIC_BASE_URL` that is not `https://`, because a provider cannot reach
 `localhost`. Without one the loop cannot close — leads never arrive and revenue is never recorded.
 [`docs/DEPLOY.md`](docs/DEPLOY.md) has three routes; the quickest needs no account, no domain and no
 server, and takes about five seconds:
@@ -652,13 +653,16 @@ src/
   approvals/   human gates #1 and #2
   creative/    asset library, generated fallback, PNG encoder, upload pipeline
   cli/         one module per command group; help is generated from the registry
-  server/      webhook middleware
+  server/      webhook middleware, access control, rate limiting
+  safety/      the fast loop: stop-loss, test budget, webhook health, the stop
+  readiness.ts can it run as a service, and may it spend money - two gates
   demo/        the whole loop in one command
 
 config/        guardrails.json - the control layer you edit
-docs/          setup guides for the two external accounts
+docs/          the two external account guides, plus DEPLOY, PROJECT_AUDIT,
+               BASELINE and FINAL_STATUS
 scripts/       generate-placeholder-assets.ts, for filling an empty assets/
-tests/         222 tests, run by `npm test` and on every push
+tests/         291 tests, run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 data/          runtime state - database, previews, mock ad account. Gitignored,
                created on demand, and `reset --yes` throws it away

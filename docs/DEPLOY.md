@@ -11,7 +11,7 @@ in the future". So this gives you the one thing the system genuinely cannot work
 hostname with a real certificate — and you still need a machine to run on.
 
 That hostname is not cosmetic. Meta will not deliver leadgen webhooks to plain HTTP, OmniDimension
-posts call outcomes to a URL you register with it, and `contract-test` already refuses a
+posts call outcomes to a URL you register with it, and `contract-test --live` already refuses a
 `PUBLIC_BASE_URL` that is not `https://` because a provider cannot reach `localhost`. Until there is
 a public HTTPS URL, the live loop cannot close: leads never arrive and revenue is never recorded.
 

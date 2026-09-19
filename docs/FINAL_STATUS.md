@@ -1,7 +1,9 @@
 # Status after Tier 2
 
 Tiers 1 and 2 of the implementation order in [`PROJECT_AUDIT.md`](PROJECT_AUDIT.md). Phases 0 and 1
-(audit and baseline) are complete; Tiers 3 and 4 are not started.
+(audit and baseline) are complete; Tier 3 is not started. Of Tier 4, only the container image and the deployment path shipped - see
+[`DEPLOY.md`](DEPLOY.md); the dashboard, the HTTP API behind it, the experiments engine and
+multi-tenancy are not started.
 
 Everything below was measured, not asserted. Commands and their output are at the end.
 
@@ -178,7 +180,7 @@ invent — it is the third of three, not the only one.
 ```
 npm run typecheck     clean
 npm run lint          clean
-npm test              265 passed, 0 failed  (was 224 at baseline)
+npm test              291 tests, 290 passed, 1 skipped on Windows  (was 224 at baseline)
 node src/cli.ts demo  green, working tree clean afterwards
 npm audit --omit=dev  0 vulnerabilities
 ```
@@ -216,7 +218,7 @@ something, rather than the tests asserting it in isolation.
 npm ci                      # install
 npm run typecheck           # tsc --noEmit
 npm run lint                # eslint
-npm test                    # 265 tests
+npm test                    # 291 tests
 npm run ci                  # all three
 node src/cli.ts demo        # end-to-end against mocks
 node src/cli.ts safety      # safety status + emergency stop state
@@ -247,8 +249,9 @@ number> --yes`, then a paused publish inspected in Ads Manager before activation
 ## Known limitations introduced or still open
 
 - **The 80% test-budget warning cannot fire under default configuration.** The shipped stop-loss
-  (400000) sits below 80% of the test budget (480000), so spend high enough to warn has already
-  passed the loss limit. Found by a test whose premise was wrong. Worth knowing when tuning those
+  (100000) sits below 80% of the shipped test budget (80% of 150000 is 120000), so spend high enough
+  to warn has already passed the loss limit. The same holds for the built-in defaults (400000
+  against 480000). Found by a test whose premise was wrong. Worth knowing when tuning those
   two numbers against each other.
 - **The safety loop runs in the `serve` process.** If that process is down, nothing is checking. A
   separate worker is Tier 3 work.

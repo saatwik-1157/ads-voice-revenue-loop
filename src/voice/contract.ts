@@ -121,9 +121,14 @@ export async function probeDispatchContract(
       ? { check: 'webhook url', status: 'pass', detail: `outcomes will be posted to ${request.body.webhook_url}` }
       : {
           check: 'webhook url',
-          status: 'warn',
+          // A live probe places a real call whose outcome is posted back to
+          // this URL. If the provider cannot reach it the probe proves nothing
+          // - the call happens and the result is lost - so this fails rather
+          // than warns. A dry run builds the request without sending it, where
+          // the address not being reachable yet is fine.
+          status: options.live ? 'fail' : 'warn',
           detail: `PUBLIC_BASE_URL is ${env.publicBaseUrl} - a provider cannot reach localhost`,
-          fix: 'PUBLIC_BASE_URL in .env',
+          fix: 'PUBLIC_BASE_URL in .env; docs/DEPLOY.md has a route that needs no account',
         },
   );
 

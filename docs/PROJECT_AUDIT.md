@@ -48,7 +48,7 @@ brief ──▶ gate #1 ──▶ Meta campaign ──▶ lead ──▶ voice c
 | `server/` | 360 | Webhook middleware |
 | `demo/` | 266 | The whole loop in one command |
 | `approvals/` | 181 | Human gates #1 and #2 |
-| `cli/` | 174 | Command registry and arg parsing |
+| `cli/` (including `cli/commands/`) | 882 | Command registry and arg parsing |
 
 ---
 
@@ -180,7 +180,7 @@ the single largest gap in the project and no amount of additional local work clo
 **There is no frontend of any kind.** No HTML, no CSS, no client framework, no `.tsx` files, no
 static assets beyond generated ad artwork. The entire operator surface is:
 
-- a CLI with 18 commands and generated help
+- a CLI with 21 commands and generated help
 - five read-only JSON HTTP endpoints
 - PNG previews written to `data/previews/<runId>/`
 

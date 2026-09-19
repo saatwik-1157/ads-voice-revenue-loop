@@ -112,7 +112,7 @@ curl -G "https://graph.facebook.com/v21.0/<PAGE_ID>/leadgen_forms" \
 That id is what you hand to `publish`:
 
 ```bash
-node src/cli.ts publish --lead-form <FORM_ID> --budget 700 --days 5
+node src/cli.ts publish --lead-form <FORM_ID> --budget 200 --days 5
 ```
 
 It becomes the creative's call-to-action — `{ type: 'SIGN_UP', value: { lead_gen_form_id } }` in

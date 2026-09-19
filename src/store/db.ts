@@ -1137,8 +1137,16 @@ export class Store {
     return (this.db.prepare('SELECT COUNT(*) as n FROM leads WHERE run_id = ?').get(runId) as { n: number }).n;
   }
 
-  callsToday(): number {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  /**
+   * Calls placed in the 24 hours before `at`.
+   *
+   * `at` matters: a caller judging a call against a different clock from the
+   * one it was recorded on gets a window that does not contain it. The demo
+   * simulates a week in seconds, so a real-wall-clock window saw every one of
+   * its calls as having happened today.
+   */
+  callsToday(at: Date = new Date()): number {
+    const since = new Date(at.getTime() - 24 * 60 * 60 * 1000).toISOString();
     return (
       this.db.prepare('SELECT COUNT(*) as n FROM call_attempts WHERE dispatched_at >= ?').get(since) as { n: number }
     ).n;

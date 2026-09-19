@@ -111,6 +111,13 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
   const skipped = { deferred: 0, suppressed: 0 };
   let leadsSeen = 0;
   for (let day = 1; day <= days; day += 1) {
+    // The simulated clock has to advance with the simulated days. Everything
+    // else here ticks - delivery, insights - but the call time was computed
+    // once outside this loop, so a week of calls all carried the same
+    // timestamp. Any rule measured over a rolling day then saw the whole run
+    // as one day's work, and the daily call ceiling started deferring leads
+    // partway through a demo that is meant to show the loop closing.
+    const dayCallTime = new Date(callTime.getTime() + (day - 1) * 24 * 60 * 60 * 1000);
     meta.tick();
     const before = new Map(store.spendByAd(runId).map((r) => [r.adId, r.leads]));
     await syncInsights(store, meta, runId);
@@ -148,7 +155,7 @@ export async function runDemo(ctx: Context, opts: { days?: number; leadsPerDay?:
             // the creative, so the decision engine has a real signal to find.
             creative_quality: meta.quality(ad.adId).toFixed(3),
           },
-          callTime,
+          dayCallTime,
         );
         if (dispatch.status !== 'dispatched') {
           // A skipped dispatch must never be silent: it is the difference

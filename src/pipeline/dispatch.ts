@@ -64,7 +64,10 @@ export async function dispatchLead(
       reason: `outside calling window ${g.callWindow.startHour}:00-${g.callWindow.endHour}:00 ${g.callWindow.timeZone}`,
     };
   }
-  const callsToday = store.callsToday();
+  // Counted against the same clock this dispatch is happening on. The demo
+  // simulates days elapsing in seconds, so measuring its calls against the real
+  // wall clock collapses a week into one day and the ceiling binds immediately.
+  const callsToday = store.callsToday(at);
   if (callsToday >= g.maxCallsPerDay) {
     // Audited like every other refusal. This one was silent, which made it the
     // worst of them to hit: leads keep arriving and being accepted, no calls go
@@ -139,7 +142,7 @@ export async function dispatchLead(
   // counts against them. Counting returned outcomes instead meant a cap of 25
   // dispatched 60, and a cap of one attempt per person dialled them three
   // times, because nothing in flight was visible to either check.
-  store.recordCallAttempt(lead);
+  store.recordCallAttempt(lead, at.toISOString());
   store.setLeadCallStatus(lead.leadId, 'dispatched');
   store.audit(lead.runId, 'voice', 'call.dispatched', {
     leadId: lead.leadId,

@@ -146,3 +146,40 @@ test('the backfill keeps call history that predates the attempts table', () => {
   assert.equal(store.callCountForPhone(runId, '+919876543210'), 1, 'the completed call is counted after backfill');
   store.close();
 });
+
+test('the daily ceiling is measured on the clock the call is placed on', () => {
+  // Two bugs met here. recordCallAttempt stamped the real wall clock while
+  // dispatchLead had been handed a simulated one, and callsToday() compared
+  // against the real clock too - so a run simulating a week in seconds saw
+  // every call as today's and started refusing partway through.
+  const store = new Store(':memory:');
+  const runId = store.createRun('clock');
+  const intake = intakeLead(store, G, runId, {
+    name: 'Asha R',
+    phone: '9876543210',
+    consent: true,
+    consentSource: 'meta_instant_form',
+    adId: 'ad_1',
+  });
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+  const lead = intake.lead;
+
+  // A rolling 24 hours, not a calendar day - which is the stricter reading and
+  // the right one: a calendar cap allows 25 calls at 23:59 and 25 more two
+  // minutes later.
+  const monday = new Date('2026-03-02T10:00:00.000Z');
+  const sameDayLater = new Date('2026-03-02T18:00:00.000Z');
+  const wellAfter = new Date('2026-03-04T10:00:00.000Z');
+
+  store.recordCallAttempt(lead, monday.toISOString());
+  assert.equal(store.callsToday(monday), 1, 'counted on the clock it was placed on');
+  assert.equal(store.callsToday(sameDayLater), 1, 'still inside the window eight hours later');
+  assert.equal(store.callsToday(wellAfter), 0, 'and out of it two days on');
+
+  store.recordCallAttempt(lead, wellAfter.toISOString());
+  assert.equal(store.callsToday(wellAfter), 1, 'the later day gets its own allowance');
+
+  // And the real-clock default does not see either of them.
+  assert.equal(store.callsToday(), 0, 'a 2026-03 call is not in today rolling window');
+  store.close();
+});

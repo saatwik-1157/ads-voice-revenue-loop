@@ -200,3 +200,15 @@ export interface AuditEvent {
   kind: string;
   detail: string;
 }
+
+export interface WebhookEventRow {
+  eventId: string;
+  provider: string;
+  providerEventId: string;
+  payloadHash: string;
+  signatureVerified: number;
+  receivedAt: string;
+  status: string;
+  processedAt: string | null;
+  failureReason: string | null;
+}

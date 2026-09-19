@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context } from '../orchestrator.ts';
 import { voiceWebhookUrl } from '../orchestrator.ts';
 import { fromMetaLeadgen, intakeLead } from '../pipeline/intake.ts';
@@ -101,21 +101,53 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
     const body = await readBody(req);
     const signature = header(req, 'x-hub-signature-256');
     if (!verifySignature(body, signature, ctx.env.meta.appSecret)) {
+      // Recorded too: repeated signature failures are how a misconfigured
+      // secret and a forged delivery both look from here.
+      const rejected = ctx.store.recordWebhookEvent({
+        provider: 'meta',
+        providerEventId: null,
+        payloadHash: hashBody(body),
+        signatureVerified: false,
+      });
+      ctx.store.finishWebhookEvent(rejected.eventId, 'failed', 'signature verification failed');
       json(res, 401, { error: 'bad signature' });
       return;
     }
     const payload = parseJson(body) as MetaWebhookBody;
-    const results: unknown[] = [];
-    // `entry` typed as anything but an array used to reach for..of and throw a
-    // TypeError, which came back as 500 - and 500 is what Meta retries on.
-    for (const entry of Array.isArray(payload.entry) ? payload.entry : []) {
-      const changes = Array.isArray(entry?.changes) ? entry.changes : [];
-      for (const change of changes) {
-        if (change?.field !== 'leadgen' || !change.value || typeof change.value !== 'object') continue;
-        results.push(await acceptLead(ctx, change.value));
-      }
+
+    // Recorded before it is acted on, so a handler that throws still leaves a
+    // row saying what arrived. Meta does not put a delivery id in the body, so
+    // the payload hash is the dedupe key.
+    const delivery = ctx.store.recordWebhookEvent({
+      provider: 'meta',
+      providerEventId: null,
+      payloadHash: hashBody(body),
+      signatureVerified: true,
+    });
+    if (delivery.duplicate) {
+      // Answer 200 so Meta stops redelivering; doing the work twice is what we
+      // are avoiding, not acknowledging it.
+      json(res, 200, { received: 0, duplicate: true, eventId: delivery.eventId });
+      return;
     }
-    json(res, 200, { received: results.length, results });
+
+    try {
+      const results: unknown[] = [];
+      // `entry` typed as anything but an array used to reach for..of and throw
+      // a TypeError, which came back as 500 - and 500 is what Meta retries on.
+      for (const entry of Array.isArray(payload.entry) ? payload.entry : []) {
+        const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+        for (const change of changes) {
+          if (change?.field !== 'leadgen' || !change.value || typeof change.value !== 'object') continue;
+          results.push(await acceptLead(ctx, change.value));
+        }
+      }
+      ctx.store.finishWebhookEvent(delivery.eventId, results.length ? 'processed' : 'ignored');
+      json(res, 200, { received: results.length, results, eventId: delivery.eventId });
+    } catch (err) {
+      ctx.store.finishWebhookEvent(delivery.eventId, 'failed', (err as Error).message.slice(0, 500));
+      throw err;
+    }
     return;
   }
 
@@ -134,8 +166,32 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
       json(res, 401, { error: 'bad signature or token' });
       return;
     }
-    const result = handleCallWebhook(ctx.store, parseJson(body));
-    json(res, result.status === 'recorded' ? 200 : 202, result);
+    const payload = parseJson(body);
+    const delivery = ctx.store.recordWebhookEvent({
+      provider: 'omnidimension',
+      // The provider's own call id when it sends one - two deliveries about the
+      // same call are the same event even if the bodies differ slightly.
+      providerEventId: typeof payload.call_id === 'string' && payload.call_id ? payload.call_id : null,
+      payloadHash: hashBody(body),
+      signatureVerified: true,
+    });
+    if (delivery.duplicate) {
+      json(res, 200, { status: 'duplicate', eventId: delivery.eventId });
+      return;
+    }
+
+    try {
+      const result = handleCallWebhook(ctx.store, payload);
+      ctx.store.finishWebhookEvent(
+        delivery.eventId,
+        result.status === 'recorded' ? 'processed' : 'ignored',
+        result.status === 'ignored' ? result.reason : undefined,
+      );
+      json(res, result.status === 'recorded' ? 200 : 202, { ...result, eventId: delivery.eventId });
+    } catch (err) {
+      ctx.store.finishWebhookEvent(delivery.eventId, 'failed', (err as Error).message.slice(0, 500));
+      throw err;
+    }
     return;
   }
 
@@ -205,6 +261,11 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   }
 
   json(res, 404, { error: `no route for ${route}` });
+}
+
+/** Identifies a delivery without keeping a second copy of someone's phone number. */
+function hashBody(body: string): string {
+  return createHash('sha256').update(body, 'utf8').digest('hex');
 }
 
 /** Meta's leadgen payloads are small; anything near this is not one of them. */

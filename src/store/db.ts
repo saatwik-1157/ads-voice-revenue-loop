@@ -11,6 +11,7 @@ import type {
   Lead,
   RunState,
   SpendPoint,
+  WebhookEventRow,
 } from '../core/types.ts';
 
 const SCHEMA = `
@@ -158,6 +159,28 @@ CREATE TABLE IF NOT EXISTS cycles (
   detail TEXT
 );
 
+-- Every inbound webhook, whether or not it was acted on.
+--
+-- Payloads used to be processed and discarded, so a delivery that failed could
+-- not be inspected, explained or replayed - the only trace was whatever the
+-- handler happened to audit. The raw body is deliberately NOT stored: it
+-- carries a phone number and a name. The hash is enough to recognise the same
+-- delivery arriving twice without keeping a second copy of someone's details.
+CREATE TABLE IF NOT EXISTS webhook_events (
+  event_id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  -- The provider's own id when it sends one; otherwise the payload hash, so
+  -- dedupe still works for a provider that does not identify its deliveries.
+  provider_event_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  signature_verified INTEGER NOT NULL,
+  received_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  processed_at TEXT,
+  failure_reason TEXT,
+  UNIQUE (provider, provider_event_id)
+);
+
 CREATE TABLE IF NOT EXISTS locks (
   name TEXT PRIMARY KEY,
   holder TEXT NOT NULL,
@@ -181,6 +204,7 @@ CREATE INDEX IF NOT EXISTS idx_approvals_run_status ON approvals(run_id, status)
 CREATE INDEX IF NOT EXISTS idx_audit_kind ON audit(kind);
 CREATE INDEX IF NOT EXISTS idx_ads_campaign ON ads(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_briefs_run ON briefs(run_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_status ON webhook_events(status, received_at);
 `;
 
 /** The DDL for one table, taken from SCHEMA so there is a single source of truth. */
@@ -701,6 +725,95 @@ export class Store {
       )
       .get(leadId) as (Omit<Lead, 'consent'> & { consent: number }) | undefined;
     return row ? { ...row, consent: row.consent === 1 } : undefined;
+  }
+
+  // --- webhook events ----------------------------------------------------
+
+  /**
+   * Record that a delivery arrived, or report that it already had.
+   *
+   * Written before the payload is acted on, so a handler that throws still
+   * leaves a row saying what showed up and when. Duplicate detection is a
+   * UNIQUE constraint rather than a read-then-write, so two deliveries racing
+   * cannot both be treated as first.
+   */
+  recordWebhookEvent(input: {
+    provider: string;
+    providerEventId: string | null;
+    payloadHash: string;
+    signatureVerified: boolean;
+  }): { eventId: string; duplicate: boolean } {
+    const eventId = id('whk');
+    // Only deliveries that passed verification share a dedupe space. A rejected
+    // one gets a row of its own every time, for two reasons: repeated failures
+    // are the signal worth counting, and otherwise replaying a known-good body
+    // with a bad signature would collide with the genuine delivery's row and
+    // flip its status to failed.
+    const key = input.signatureVerified ? (input.providerEventId ?? input.payloadHash) : `rejected:${eventId}`;
+    const inserted = this.db
+      .prepare(
+        `INSERT INTO webhook_events
+           (event_id, provider, provider_event_id, payload_hash, signature_verified, received_at, status)
+         VALUES (?,?,?,?,?,?, 'received')
+         ON CONFLICT(provider, provider_event_id) DO NOTHING`,
+      )
+      .run(eventId, input.provider, key, input.payloadHash, input.signatureVerified ? 1 : 0, now());
+
+    if (Number(inserted.changes) === 1) return { eventId, duplicate: false };
+
+    const existing = this.db
+      .prepare('SELECT event_id as eventId FROM webhook_events WHERE provider = ? AND provider_event_id = ?')
+      .get(input.provider, key) as { eventId: string } | undefined;
+    return { eventId: existing?.eventId ?? eventId, duplicate: true };
+  }
+
+  finishWebhookEvent(eventId: string, status: 'processed' | 'failed' | 'ignored', failureReason?: string): void {
+    this.db
+      .prepare('UPDATE webhook_events SET status = ?, processed_at = ?, failure_reason = ? WHERE event_id = ?')
+      .run(status, now(), failureReason ?? null, eventId);
+  }
+
+  webhookEvent(eventId: string): WebhookEventRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT event_id as eventId, provider, provider_event_id as providerEventId, payload_hash as payloadHash,
+                signature_verified as signatureVerified, received_at as receivedAt, status,
+                processed_at as processedAt, failure_reason as failureReason
+         FROM webhook_events WHERE event_id = ?`,
+      )
+      .get(eventId) as WebhookEventRow | undefined;
+    return row ?? null;
+  }
+
+  listWebhookEvents(options: { status?: string; provider?: string; limit?: number } = {}): WebhookEventRow[] {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (options.status) {
+      where.push('status = ?');
+      params.push(options.status);
+    }
+    if (options.provider) {
+      where.push('provider = ?');
+      params.push(options.provider);
+    }
+    params.push(options.limit ?? 50);
+    return this.db
+      .prepare(
+        `SELECT event_id as eventId, provider, provider_event_id as providerEventId, payload_hash as payloadHash,
+                signature_verified as signatureVerified, received_at as receivedAt, status,
+                processed_at as processedAt, failure_reason as failureReason
+         FROM webhook_events ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY received_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(...params) as unknown as WebhookEventRow[];
+  }
+
+  /** How many deliveries failed since a given time. Feeds the health check. */
+  webhookFailuresSince(sinceIso: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM webhook_events WHERE status = 'failed' AND received_at >= ?")
+      .get(sinceIso) as { n: number };
+    return row.n;
   }
 
   /** How many call outcomes this lead row already has. */

@@ -480,6 +480,20 @@ These are enforced in code, not just documented:
 Ordered so that each step is cheap and the expensive ones come last. Nothing before step 6 spends
 anything.
 
+**Step 0 is a public URL.** Meta will not deliver leadgen webhooks over plain HTTP, and
+`contract-test` refuses a `PUBLIC_BASE_URL` that is not `https://`, because a provider cannot reach
+`localhost`. Without one the loop cannot close — leads never arrive and revenue is never recorded.
+[`docs/DEPLOY.md`](docs/DEPLOY.md) has three routes; the quickest needs no account, no domain and no
+server, and takes about five seconds:
+
+```bash
+docker run --rm --network container:<app-container> \
+  cloudflare/cloudflared:latest tunnel --url http://localhost:8787
+```
+
+That was verified end to end from outside this machine: real DNS, a real certificate, both webhook
+routes reachable and refusing unsigned deliveries, every other route refusing anonymous callers.
+
 **1. Credentials, still in mock mode.** Fill the `META_*` values in `.env` from `.env.example` and
 leave `FL_MODE=mock`. `.env` is read regardless of mode, so the checks below run against real
 credentials while no code path exists that could construct a live publisher.

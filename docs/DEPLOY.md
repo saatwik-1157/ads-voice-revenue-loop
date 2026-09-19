@@ -15,18 +15,32 @@ posts call outcomes to a URL you register with it, and `contract-test` already r
 `PUBLIC_BASE_URL` that is not `https://` because a provider cannot reach `localhost`. Until there is
 a public HTTPS URL, the live loop cannot close: leads never arrive and revenue is never recorded.
 
-## What you need
+## Three routes, pick one
+
+| Route | Needs | Hostname | Good for |
+|---|---|---|---|
+| **[Quick tunnel](#the-quick-tunnel-no-account-no-domain-about-five-seconds)** | Nothing. No account, no domain, no server. | Random, changes on restart | Proving the loop over the real internet. `contract-test --live`, a first real webhook. |
+| **[Named tunnel](#the-named-tunnel-your-own-hostname-stays-put)** | A free domain, a free Cloudflare account, a machine that stays on | Yours, stable | Running it without paying for a server |
+| **[VPS](#1-register-the-domain-you-do-this-not-the-system)** | A free domain, a small VPS (~€4/mo) | Yours, stable | Where this belongs once real money is moving |
+
+Start at the top and move down. The quick tunnel takes about five seconds and closes the biggest
+unknown in the project — whether a provider can actually reach your webhook endpoint.
+
+Everything below is the VPS route. The tunnel routes are [further down](#no-server-a-tunnel-instead)
+and share the same image, `.env` and `verify.sh`.
+
+### For the VPS route specifically
 
 | | |
 |---|---|
 | A domain | Free, from FreeDomain. You register it — see below. |
-| A server with a public IP | Any small VPS. Docker and Docker Compose installed. 1 GB RAM is plenty. Or **no server at all** — see [the tunnel route](#no-server-a-tunnel-instead). |
+| A server with a public IP | Any small VPS. Docker and Docker Compose installed. 1 GB RAM is plenty. |
 | Ports 80 and 443 open | 443 serves traffic; **80 is required** for the certificate challenge. |
 | A `.env` file | Yours, on the server. Never committed, never baked into the image. |
 
 ---
 
-## 1. Register the domain — you do this, not the system
+## 1. Register the domain: you do this, not the system
 
 Go to the [FreeDomain dashboard](https://domain.digitalplat.org/), sign in, and register the name you
 want. It involves creating an account and submitting a form under your identity, so it is yours to do
@@ -165,7 +179,36 @@ only at the end.
 
 If you do not have a VPS and do not want to pay for one, Cloudflare Tunnel gives you the same public
 HTTPS URL from a machine you already own — no public IP, no port forwarding, no certificate to
-manage. FreeDomain supports this directly: its "bring your own DNS" is exactly the custom-nameserver
+manage. There are two versions of this, and the difference is whether the hostname stays still.
+
+### The quick tunnel: no account, no domain, about five seconds
+
+```bash
+docker compose up -d app                                    # or the container you already have
+docker run --rm --network container:<app-container> \
+  cloudflare/cloudflared:latest tunnel --url http://localhost:8787
+```
+
+It prints a `https://something-random.trycloudflare.com` URL. No signup, no token, no card, and a
+real certificate — this project's own verification run against one came back with a Google Trust
+Services certificate and every route behaving.
+
+**What it is for:** proving the loop works over the real internet. `contract-test --live`, and a
+first genuine post-call webhook from OmniDimension — which is the least-verified integration in the
+project and the hardest thing to test any other way.
+
+**What it is not for:** anything you leave running. Cloudflare's own startup banner says these
+account-less tunnels have **no uptime guarantee**. The hostname is also ephemeral: restart
+`cloudflared` and it changes, so every restart means re-registering the webhook URL with Meta. A lead
+that arrives at the old hostname is a person who filled in your form and never got a call.
+
+Take it down with `docker rm -f <tunnel-container>`. While it is up, your machine is serving the
+public internet — only `/health` and the two signature-checked webhook routes are reachable without a
+token, but it is real exposure, so be deliberate about it.
+
+### The named tunnel: your own hostname, stays put
+
+FreeDomain supports this directly: its "bring your own DNS" is exactly the custom-nameserver
 delegation Cloudflare needs.
 
 1. Create a free Cloudflare account and add your FreeDomain hostname as a zone.
@@ -236,14 +279,34 @@ docker run --rm -v founder-labs-autopilot_autopilot-data:/data -v "$PWD:/backup"
   claiming a route is exposed.
 - `deploy/provision.sh` parses (`bash -n`). Its Docker install, `ufw` and DNS branches have **not**
   been run — this machine is Windows and has no `ufw`.
+- **The data volume survives the container.** The container was destroyed and a new one started on
+  the same named volume; a run with 105 leads and INR 6,000.12 of spend came back intact. This was a
+  claim in this document before it was a tested one.
+- **The safety loop engages on its own in the container.** Left running with `--schedule`, the fast
+  loop passed the test budget, wrote `emergency_stop.engaged` at `error` level, and a cycle run
+  immediately afterwards returned `[skipped] emergency stop engaged`. Engaged `by safety-loop`, with
+  no human involved. Readiness deliberately stayed 200 and the webhook routes stayed reachable.
 
-**Not tested, because it needs a registered domain and a public server:**
+**Tested over the public internet**, through a Cloudflare quick tunnel, with `verify.sh` run from a
+container rather than from the host so the traffic genuinely left and came back:
 
-- Certificate issuance. The Caddy configuration is conventional, but no certificate has been issued
-  from this repository and Let's Encrypt has never seen this hostname.
-- Anything reaching the box from outside — DNS, ports 80 and 443, the proxy path end to end.
-- A real webhook delivery from Meta or OmniDimension. Those integrations remain unverified against
-  live providers, exactly as [`FINAL_STATUS.md`](FINAL_STATUS.md) says.
+- **13 passed, 0 failed.** DNS resolved, TLS presented a real certificate (Google Trust Services,
+  valid to Nov 5 2026).
+- **Both webhook routes reachable from outside and refusing unsigned deliveries.** This is the one
+  that matters: Meta can get through, a forged POST cannot.
+- Every read and write route — `/runs`, `/runs/:id`, `/leads`, `/revenue` — refused anonymous callers
+  over the open internet. A viewer token read; it could not write.
+
+**Still not tested:**
+
+- **Certificate issuance by Caddy.** The certificate above came from Cloudflare, not from the Caddy
+  path in `docker-compose.yml`. Let's Encrypt has still never seen a hostname from this repository,
+  so step 4 remains the unproven step of the VPS route.
+- **`provision.sh` end to end** on a real Debian or Ubuntu host.
+- **A real webhook delivery from Meta or OmniDimension.** Reachability is now proven; the payload
+  handling is not. Those integrations remain unverified against live providers, exactly as
+  [`FINAL_STATUS.md`](FINAL_STATUS.md) says. A quick tunnel is the cheapest way to close this — it
+  gives you a URL a provider can actually call without a domain or a server.
 
 Do not treat a green local container as evidence that the deployment works. The first honest check is
 step 5, run from somewhere other than the server.

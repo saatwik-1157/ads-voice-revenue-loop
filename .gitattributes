@@ -1,0 +1,13 @@
+# This repository is developed on Windows and deployed on Linux. A shell script
+# that reaches the server with CRLF endings fails with
+#   /bin/bash^M: bad interpreter: No such file or directory
+# which is a confusing way to learn about line endings. Force LF on everything
+# that is read by something other than an editor.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Caddyfile   text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# The scripts are executable on checkout, so `./deploy/provision.sh` works
+# without a chmod step that is easy to forget.

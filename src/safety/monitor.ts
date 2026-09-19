@@ -1,5 +1,6 @@
 import type { Context } from '../orchestrator.ts';
 import { money } from '../core/util.ts';
+import { log } from '../core/log.ts';
 
 /**
  * The fast safety loop.
@@ -145,6 +146,11 @@ export function runSafetyCheck(ctx: Context, options: SafetyOptions = {}): Safet
     by: 'safety-loop',
   });
   if (engaged) {
+    log.error('emergency_stop.engaged', {
+      trigger: first.check,
+      reason: first.detail,
+      findings: report.stops.length,
+    });
     ctx.store.audit(null, 'system', 'emergency_stop.engaged', {
       trigger: first.check,
       reason: first.detail,

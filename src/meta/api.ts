@@ -3,6 +3,7 @@ import { MetaApiError } from './provider.ts';
 import type { CreativeVariant } from '../core/types.ts';
 import { redact } from '../core/util.ts';
 import { parseRetryAfter, withRetry, type RetryOptions } from '../core/retry.ts';
+import { log } from '../core/log.ts';
 
 /**
  * Meta Marketing API client - the authorized interface.
@@ -46,14 +47,34 @@ export class MetaApiProvider implements MetaProvider {
 
   /** One HTTP round trip, normalized into a MetaApiError that knows if it is transient. */
   async #send(url: string | URL, init: RequestInit): Promise<string> {
+    // Latency is logged whatever happens. A provider that has become slow but
+    // has not yet started failing is the state worth seeing early, and it is
+    // invisible if only errors are recorded.
+    const started = process.hrtime.bigint();
+    const path = new URL(String(url)).pathname;
+    const elapsed = (): number => Math.round(Number(process.hrtime.bigint() - started) / 1e5) / 10;
+
     let res: Response;
     try {
       res = await this.#fetch(url, init);
     } catch (err) {
       // DNS failure, connection reset, TLS error - no response at all.
+      log.error('provider.request', {
+        provider: 'meta',
+        path,
+        status: 0,
+        durationMs: elapsed(),
+        error: (err as Error).message,
+      });
       throw new MetaApiError(0, (err as Error).message, { cause: err });
     }
     const text = await res.text();
+    log[res.ok ? 'info' : 'warn']('provider.request', {
+      provider: 'meta',
+      path,
+      status: res.status,
+      durationMs: elapsed(),
+    });
     if (!res.ok) {
       throw new MetaApiError(res.status, redact(text), {
         retryAfterMs: parseRetryAfter(res.headers.get('retry-after')),

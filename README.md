@@ -376,6 +376,37 @@ Ctrl-C finishes the cycle in flight and then exits. (On Windows, Node does not r
 an external kill, so an unattended deployment there should stop the process via Ctrl-C or the service
 manager rather than `taskkill` mid-cycle; the lock lease covers it either way.)
 
+### Logs
+
+Commands print for people on **stdout**. Structured logs go to **stderr**, so piping a command
+somewhere does not mix the two. `FL_LOG_FORMAT=json` switches the structured stream to one JSON
+object per line; anything else renders `at level event key=value`. `FL_LOG_LEVEL` is
+`debug | info | warn | error`, default `info`.
+
+```bash
+FL_LOG_FORMAT=json node src/cli.ts serve --schedule 2> autopilot.log
+```
+
+Four things are logged, because they are the four questions asked at 3am. `http.request` — method,
+path, status, duration, and a `requestId` that also comes back on the `x-request-id` response header,
+so a caller reporting a problem and the line in the log join without guessing from timestamps.
+`provider.request` — which provider, which path, status and **duration**; a provider that has gone
+slow but has not started failing yet is invisible if only errors are recorded. `autopilot.decision` —
+every autonomous decision with its signal, what it did, and the economics it decided on.
+`emergency_stop.engaged`.
+
+What cannot reach a log line is enforced on the way out rather than trusted to every call site. A
+field whose name looks like a secret — `token`, `secret`, `password`, `api_key`, `authorization`,
+`credential`, `cookie`, `signature` — is **dropped entirely**, at any depth, because the safest
+rendering of a password is no rendering. Phone numbers are masked to their last four digits. Every
+value is run through the same redaction the provider errors use, which catches a token pasted into a
+free-text message where no field name would have flagged it. Request logging records the **path
+only**, never the query string, which is where a token ends up when somebody is debugging by hand.
+
+That last rule is a deny-list, and a deny-list cannot enumerate every name somebody will invent. It
+is the third of three defences, not the only one; `tests/logging.test.ts` is what is actually
+guaranteed.
+
 ## Safety and platform rules
 
 These are enforced in code, not just documented:

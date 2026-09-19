@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createHash } from 'node:crypto';
 import { identify, permits, refusalFor, type Role } from './access.ts';
 import { RateLimiter, RATE_LIMITS } from './ratelimit.ts';
+import { log } from '../core/log.ts';
+import { id } from '../core/util.ts';
 import type { Context } from '../orchestrator.ts';
 import { voiceWebhookUrl } from '../orchestrator.ts';
 import { fromMetaLeadgen, intakeLead } from '../pipeline/intake.ts';
@@ -42,6 +44,26 @@ export function createHttpServer(ctx: Context) {
   // One limiter per server, so tests and separate instances do not share state.
   const limiter = new RateLimiter();
   return createServer((req, res) => {
+    const started = process.hrtime.bigint();
+    const requestId = id('req');
+    // The id goes back on the response too, so a caller reporting a problem and
+    // the line in the log can be joined without guessing from timestamps.
+    res.setHeader('x-request-id', requestId);
+
+    res.on('finish', () => {
+      const ms = Number(process.hrtime.bigint() - started) / 1e6;
+      const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
+      log[level]('http.request', {
+        requestId,
+        method: req.method,
+        // The path only. A query string is where an id or a token ends up
+        // pasted by somebody debugging, and it is not worth the risk.
+        path: new URL(req.url ?? '/', 'http://localhost').pathname,
+        status: res.statusCode,
+        durationMs: Math.round(ms * 10) / 10,
+      });
+    });
+
     handle(ctx, req, res, limiter).catch((err: unknown) => {
       if (err instanceof HttpError) {
         ctx.store.audit(null, 'system', 'http.rejected', {
@@ -49,10 +71,13 @@ export function createHttpServer(ctx: Context) {
           status: err.status,
           error: err.message,
         });
+        log.warn('http.rejected', { requestId, status: err.status, error: err.message });
         json(res, err.status, { error: err.message });
         return;
       }
       ctx.store.audit(null, 'system', 'http.error', { url: req.url, error: (err as Error).message });
+      // The stack goes to the log, never to the caller: it names internal paths.
+      log.error('http.error', { requestId, error: err as Error });
       json(res, 500, { error: 'internal error' });
     });
   });

@@ -6,6 +6,7 @@ import { evaluate } from './economics/decision.ts';
 import { applyRecommendation, describeOutcome, type ApplyOutcome } from './apply.ts';
 import { DEFAULT_LEASE_MS, PROCESS_HOLDER, runLockName } from './store/lock.ts';
 import type { MockMetaProvider } from './meta/mock.ts';
+import { log } from './core/log.ts';
 
 /**
  * Phase G on a timer: sync -> evaluate -> act, unattended.
@@ -93,6 +94,17 @@ export async function runCycle(ctx: Context, runId: string, options: CycleOption
     const outcome = await applyRecommendation(ctx, runId, brief, rec, { now: at });
 
     const summary = `${rec.decision} (${rec.signal}) - ${describeOutcome(outcome, ctx.guardrails.currency)}`;
+    // Every autonomous decision, with what it decided and what it did about it.
+    log.info('autopilot.decision', {
+      runId,
+      cycleId,
+      decision: rec.decision,
+      signal: rec.signal,
+      outcome: outcome.kind,
+      spendMinor: rec.economics.spendMinor,
+      revenueMinor: rec.economics.revenueMinor,
+      leads: rec.economics.leads,
+    });
     ctx.store.audit(runId, 'agent', 'cycle.completed', {
       cycleId,
       decision: rec.decision,
@@ -111,6 +123,7 @@ export async function runCycle(ctx: Context, runId: string, options: CycleOption
     });
   } catch (err) {
     const message = (err as Error).message;
+    log.error('autopilot.cycle_failed', { runId, cycleId, error: message });
     ctx.store.audit(runId, 'system', 'cycle.failed', { cycleId, error: message });
     return finish(ctx, cycleId, { runId, status: 'error', reason: message, summary: `cycle failed: ${message}` });
   } finally {

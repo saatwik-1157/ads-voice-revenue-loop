@@ -3,6 +3,7 @@ import { fail, reportCycles, stopOnSignal, write } from '../io.ts';
 import { formatDuration, parseDuration, runAllCycles, runCycle, startScheduler } from '../../scheduler.ts';
 import { createHttpServer } from '../../server/http.ts';
 import { runSafetyCheck } from '../../safety/monitor.ts';
+import { noTokensConfigured } from '../../server/access.ts';
 import { voiceWebhookUrl } from '../../orchestrator.ts';
 import type { Context } from '../../orchestrator.ts';
 import type { Args } from '../args.ts';
@@ -91,6 +92,12 @@ export const automationCommands: Command[] = [
           write('  WARNING: no OMNI_WEBHOOK_SECRET or OMNI_WEBHOOK_TOKEN - post-call results will all');
           write('           be rejected (401). Prefer the secret; the token is the weaker fallback.');
         }
+        if (noTokensConfigured()) {
+          write('  WARNING: no FL_ADMIN_TOKEN or FL_VIEWER_TOKEN - every route except the webhooks');
+          write('           and /health is closed. That is the safe default, not a working setup.');
+        }
+        write('  GET /health/live   liveness (open)');
+        write('  GET /health/ready  readiness (open, 503 when not ready)');
       });
 
       // The fast safety loop. Separate interval on purpose: "is this campaign

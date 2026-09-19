@@ -96,9 +96,11 @@ test('an oversized body is answered, not dropped', async () => {
 
 test('a token whose bytes and characters disagree is refused, not a crash', async () => {
   // "probé".length === "probe".length, but the UTF-8 buffers differ in length
-  // and timingSafeEqual throws on that - which surfaced as 500, not 403.
+  // and timingSafeEqual throws on that - which surfaced as a 500.
+  // 401 rather than 403: the caller did not authenticate at all. 403 would say
+  // "we know who you are and you may not", which is a different fact.
   const res = await post('/revenue', '{}', { 'x-fl-admin-token': 'admin-tokeé' });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 401);
 });
 
 test('revenue has to be a whole, non-negative number of minor units', async () => {

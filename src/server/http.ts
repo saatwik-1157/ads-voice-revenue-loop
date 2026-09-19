@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { identify, permits, refusalFor, type Role } from './access.ts';
+import { RateLimiter, RATE_LIMITS } from './ratelimit.ts';
 import type { Context } from '../orchestrator.ts';
 import { voiceWebhookUrl } from '../orchestrator.ts';
 import { fromMetaLeadgen, intakeLead } from '../pipeline/intake.ts';
@@ -37,8 +39,10 @@ export class HttpError extends Error {
 }
 
 export function createHttpServer(ctx: Context) {
+  // One limiter per server, so tests and separate instances do not share state.
+  const limiter = new RateLimiter();
   return createServer((req, res) => {
-    handle(ctx, req, res).catch((err: unknown) => {
+    handle(ctx, req, res, limiter).catch((err: unknown) => {
       if (err instanceof HttpError) {
         ctx.store.audit(null, 'system', 'http.rejected', {
           url: req.url,
@@ -74,9 +78,40 @@ function parseJson(body: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(
+  ctx: Context,
+  req: IncomingMessage,
+  res: ServerResponse,
+  limiter: RateLimiter,
+): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = `${req.method} ${url.pathname}`;
+
+  const who = identify(req);
+  const caller = who ? `${who.role}` : (req.socket.remoteAddress ?? 'unknown');
+
+  /**
+   * Refuse if this caller is asking too often. Keyed on identity when there is
+   * one and on address when there is not, so one noisy anonymous client cannot
+   * spend an authenticated operator's budget.
+   */
+  const limited = (kind: keyof typeof RATE_LIMITS): boolean => {
+    const decision = limiter.check(`${kind}:${caller}`, RATE_LIMITS[kind]!);
+    if (decision.allowed) return false;
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+    json(res, 429, { error: 'too many requests', retryAfterSeconds: decision.retryAfterSeconds });
+    return true;
+  };
+
+  /** Everything that is not a webhook or a liveness probe needs a principal. */
+  const requires = (role: Role): boolean => {
+    if (permits(who, role)) return false;
+    if (limited('unauthenticated')) return true;
+    const refusal = refusalFor(role);
+    ctx.store.audit(null, 'system', 'http.unauthorized', { url: req.url, role, caller });
+    json(res, refusal.status, refusal.body);
+    return true;
+  };
 
   // Meta webhook subscription handshake.
   if (route === 'GET /webhooks/meta') {
@@ -92,12 +127,50 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
     return;
   }
 
-  if (route === 'GET /health') {
-    json(res, 200, { ok: true, mode: ctx.env.mode, meta: ctx.meta.kind, voice: ctx.voice.kind });
+  // Liveness: is this process running at all. Deliberately says nothing about
+  // whether it is doing anything useful, and needs no credentials, because a
+  // load balancer has none. It answers 200 as long as the event loop turns.
+  if (route === 'GET /health' || route === 'GET /health/live') {
+    json(res, 200, { ok: true, mode: ctx.env.mode });
+    return;
+  }
+
+  // Readiness: should traffic be sent here. This one is allowed to fail, which
+  // is the whole point - the previous /health returned a static ok and could
+  // not report a problem, making it useless as a signal.
+  if (route === 'GET /health/ready') {
+    const checks: Record<string, { ok: boolean; detail?: string }> = {};
+
+    // The database is the only hard dependency. A failed read here is fatal.
+    try {
+      ctx.store.db.prepare('SELECT 1').get();
+      checks.database = { ok: true };
+    } catch (err) {
+      checks.database = { ok: false, detail: (err as Error).message.slice(0, 200) };
+    }
+
+    // Recent webhook failures mean revenue and opt-outs may not be landing.
+    const since = new Date(Date.now() - 15 * 60_000).toISOString();
+    const failures = ctx.store.webhookFailuresSince(since);
+    checks.webhooks = failures >= 5 ? { ok: false, detail: `${failures} failures in 15 minutes` } : { ok: true };
+
+    // A stopped autopilot is not unhealthy - it is a deliberate state - but it
+    // is the first thing anyone looking at this page needs to know.
+    const stop = ctx.store.emergencyStop();
+
+    const ready = Object.values(checks).every((c) => c.ok);
+    json(res, ready ? 200 : 503, {
+      ready,
+      mode: ctx.env.mode,
+      providers: { meta: ctx.meta.kind, voice: ctx.voice.kind },
+      autopilot: stop.engaged ? { state: 'paused', trigger: stop.trigger, reason: stop.reason } : { state: 'active' },
+      checks,
+    });
     return;
   }
 
   if (route === 'POST /webhooks/meta') {
+    if (limited('webhook')) return;
     const body = await readBody(req);
     const signature = header(req, 'x-hub-signature-256');
     if (!verifySignature(body, signature, ctx.env.meta.appSecret)) {
@@ -152,6 +225,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   }
 
   if (route === 'POST /webhooks/omnidimension') {
+    if (limited('webhook')) return;
     const body = await readBody(req);
     // HMAC is preferred. The static token exists because a voice platform that
     // can only attach a fixed header would otherwise be unable to authenticate
@@ -198,10 +272,8 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   // Local/manual lead submission - useful for testing the loop without Meta.
   // Gated on an admin token: this route places phone calls.
   if (route === 'POST /leads') {
-    if (!authorized(ctx, req)) {
-      json(res, 403, { error: 'set FL_ADMIN_TOKEN and send it as x-fl-admin-token' });
-      return;
-    }
+    if (requires('admin')) return;
+    if (limited('write')) return;
     const body = await readBody(req);
     const payload = parseJson(body) as { runId?: string } & Record<string, unknown>;
     const runId = payload.runId ?? ctx.store.latestRun();
@@ -214,10 +286,8 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   }
 
   if (route === 'POST /revenue') {
-    if (!authorized(ctx, req)) {
-      json(res, 403, { error: 'set FL_ADMIN_TOKEN and send it as x-fl-admin-token' });
-      return;
-    }
+    if (requires('admin')) return;
+    if (limited('write')) return;
     const body = await readBody(req);
     const payload = parseJson(body) as { leadId?: unknown; amountMinor?: unknown; source?: unknown };
 
@@ -240,11 +310,15 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse): 
   }
 
   if (route === 'GET /runs') {
+    if (requires('viewer')) return;
+    if (limited('read')) return;
     json(res, 200, { runs: ctx.store.listRuns() });
     return;
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/runs/')) {
+    if (requires('viewer')) return;
+    if (limited('read')) return;
     const runId = url.pathname.split('/')[2]!;
     const brief = ctx.store.getBrief(runId);
     if (!brief) {
@@ -392,21 +466,6 @@ function readBody(req: IncomingMessage): Promise<string> {
       if (!overLimit) reject(err);
     });
   });
-}
-
-/**
- * Admin routes are closed unless FL_ADMIN_TOKEN is set and matches. An unset
- * token fails closed: these routes can dial a stranger and move revenue.
- */
-function authorized(ctx: Context, req: IncomingMessage): boolean {
-  const expected = Buffer.from(process.env.FL_ADMIN_TOKEN ?? '', 'utf8');
-  if (expected.length === 0) return false;
-  // Compare bytes, not UTF-16 units. `"probé".length` is 5 like `"probe"`, but
-  // the buffers differ in length and timingSafeEqual throws on that - turning
-  // a wrong token into a 500 instead of a refusal.
-  const provided = Buffer.from(header(req, 'x-fl-admin-token'), 'utf8');
-  if (provided.length !== expected.length) return false;
-  return timingSafeEqual(provided, expected);
 }
 
 function header(req: IncomingMessage, name: string): string {

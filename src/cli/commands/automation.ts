@@ -114,7 +114,12 @@ export const automationCommands: Command[] = [
       }
       const safetyMs = safetyFlag ? parseDuration(safetyFlag) : 60_000;
       let safetyTimer: NodeJS.Timeout | null = null;
-      if (scheduling) {
+      // Always, not only when scheduling. `serve` on its own still accepts
+      // leads, places calls and records revenue - it just does not evaluate -
+      // so running it without the stop-loss meant the one loop that can halt
+      // spending was absent from the configuration the Dockerfile suggests for
+      // driving cycles from outside.
+      {
         write(`  safety check every ${formatDuration(safetyMs)}`);
         safetyTimer = setInterval(() => {
           // The loop can now pause a campaign at the provider, so it is async.

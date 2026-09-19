@@ -101,8 +101,14 @@ test('migrations run once and are recorded', () => {
   first.close();
 
   assert.ok(applied.length >= 2, 'the ledger records what ran');
-  assert.deepEqual(applied.map((m) => m.version), [...applied.map((m) => m.version)].sort((a, b) => a - b),
-    'in version order');
+  // Against the literal order, not a sorted copy of itself. The rows arrive
+  // ORDER BY version on an INTEGER PRIMARY KEY, so comparing them to their own
+  // sort could never fail - applying the migrations in reverse left this green.
+  assert.deepEqual(
+    applied.map((m) => m.version),
+    [1, 2, 3],
+    'applied in ascending version order',
+  );
 
   // Reopening must not re-run them.
   const second = new Store(path);

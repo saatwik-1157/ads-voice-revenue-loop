@@ -140,6 +140,34 @@ export async function applyRecommendation(
     });
   }
 
+  // The total test budget, re-checked against what has actually been spent.
+  // assertBudgetWithinCaps had exactly one call site - the initial publish - so
+  // only the daily cap bounded a raise: with 5,900 of a 6,000 test budget
+  // already gone, an autonomous SCALE still raised the daily budget to 1,300.
+  const spentMinor = ctx.store.totalSpendMinor(runId);
+  const remaining = g.maxTestBudgetMinor - spentMinor;
+  if (remaining <= 0) {
+    ctx.store.audit(runId, 'agent', 'budget.raise_refused', {
+      reason: 'test budget exhausted',
+      spentMinor,
+      capMinor: g.maxTestBudgetMinor,
+    });
+    return { kind: 'no_change', reason: 'the test budget is spent; a raise needs a new decision', plan, pausedAds };
+  }
+  if (plan.proposedDailyMinor > remaining) {
+    ctx.store.audit(runId, 'agent', 'budget.raise_refused', {
+      reason: 'a day at the proposed budget would pass the test budget',
+      proposedDailyMinor: plan.proposedDailyMinor,
+      remainingMinor: remaining,
+    });
+    return {
+      kind: 'no_change',
+      reason: `${money(plan.proposedDailyMinor, g.currency)}/day would pass the test budget with ${money(remaining, g.currency)} left`,
+      plan,
+      pausedAds,
+    };
+  }
+
   await ctx.meta.setDailyBudget(campaign.adsetId, plan.proposedDailyMinor);
   ctx.store.setCampaignBudget(campaign.campaignId, plan.proposedDailyMinor);
   ctx.store.audit(runId, 'agent', 'budget.raised', {

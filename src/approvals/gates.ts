@@ -76,7 +76,12 @@ export function requestGate1(
     runId,
     GATE_1,
     'Publish first test campaign',
-    JSON.stringify({ summary: full, blocking, reviewFlags: flags }),
+    // dailyBudgetMinor is recorded as a number, not only inside the summary
+    // text. It was previously in the prose alone, so nothing could compare it
+    // to what actually got published: a gate approved at INR 10/day permitted
+    // a campaign at INR 1,500/day, and the only trace of the discrepancy was a
+    // sentence nobody re-read.
+    JSON.stringify({ summary: full, blocking, reviewFlags: flags, dailyBudgetMinor }),
   );
   store.setRunState(runId, 'awaiting_gate1');
   store.audit(runId, 'agent', 'gate1.requested', { approvalId, blocking, reviewFlags: flags });

@@ -9,7 +9,7 @@ import {
   GuardrailViolation,
   type Guardrails,
 } from '../config/guardrails.ts';
-import { now } from '../core/util.ts';
+import { money, now } from '../core/util.ts';
 import { GATE_1 } from '../approvals/gates.ts';
 import { checkClaims, checkPromiseAlignment } from '../brief/claims.ts';
 import { missingAssets } from '../creative/pipeline.ts';
@@ -57,6 +57,31 @@ export async function publishCampaign(
 
   if (!store.hasApproval(runId, GATE_1)) {
     throw new GuardrailViolation('gate_1', `run ${runId} has no approved gate #1; nothing may be published`);
+  }
+
+  // The gate approved a number, and this is where that number has to bind.
+  // Checking only that *an* approval exists meant the approved amount lived
+  // solely in a human-readable summary: approve INR 10/day, publish at INR
+  // 1,500/day, and nothing anywhere objected.
+  const approvedBudget = store
+    .approvedApprovals(runId, GATE_1)
+    .map((a) => {
+      try {
+        const d = JSON.parse(a.detail) as { dailyBudgetMinor?: unknown };
+        return typeof d.dailyBudgetMinor === 'number' ? d.dailyBudgetMinor : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((v): v is number => v !== null)
+    .reduce<number | null>((max, v) => (max === null || v > max ? v : max), null);
+
+  if (approvedBudget !== null && options.dailyBudgetMinor > approvedBudget) {
+    throw new GuardrailViolation(
+      'gate_1_budget',
+      `gate #1 approved ${money(approvedBudget, g.currency)}/day for run ${runId}; ` +
+        `publishing at ${money(options.dailyBudgetMinor, g.currency)}/day needs a new approval`,
+    );
   }
 
   // Re-checked here, against the brief actually being sent, and not only at

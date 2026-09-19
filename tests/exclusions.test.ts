@@ -187,7 +187,13 @@ test('an ambiguous niche carries its flags through to gate #1', () => {
   } as never;
 
   const gate = requestGate1(store, G, runId, brief, 50000, reviewFlags);
-  assert.deepEqual(gate.reviewFlags, reviewFlags);
+  // Compared against the literal, not against the same array by reference -
+  // this fixture has no creatives, so requestGate1 returns the caller's array
+  // untouched and `deepEqual(gate.reviewFlags, reviewFlags)` compared it to
+  // itself.
+  assert.equal(gate.reviewFlags.length, 1);
+  assert.match(gate.reviewFlags[0] ?? '', /housing_adjacent/);
+  assert.match(gate.reviewFlags[0] ?? '', /sells a service to residents/);
   assert.match(gate.summary, /CONFIRM/);
   assert.match(gate.summary, /housing_adjacent/);
   store.close();

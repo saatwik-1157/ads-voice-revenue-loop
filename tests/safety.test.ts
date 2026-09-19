@@ -359,3 +359,39 @@ test('the safety loop never resumes anything', async () => {
 
   ctx.store.close();
 });
+
+test('a stop-loss still pauses when the stop was already engaged for something else', async () => {
+  // The hole in the first version of this fix: it keyed off the stop's own
+  // trigger and returned early if the stop was already engaged. So a webhook
+  // outage - or a manual pause - engaging first swallowed every later
+  // stop-loss. The finding was detected on every pass and skipped over, while
+  // the ad set kept spending.
+  const { ctx, runId } = await liveRun();
+  const campaign = ctx.store.getCampaign(runId)!;
+
+  const paused: string[] = [];
+  ctx.meta.setStatus = (objectId: string, status: 'ACTIVE' | 'PAUSED'): Promise<void> => {
+    if (status === 'PAUSED') paused.push(objectId);
+    return Promise.resolve();
+  };
+
+  // Engaged first for something that is not about money.
+  ctx.store.engageEmergencyStop({ trigger: 'webhooks', reason: 'deliveries failing', by: 'safety-loop' });
+  await enforceSafety(ctx);
+  assert.deepEqual(paused, [], 'a webhook outage is not a reason to pause a campaign');
+
+  // Now the money runs out.
+  ctx.store.recordSpend({
+    runId,
+    adId: 'ad_1',
+    spendMinor: G.stopLossMinor + 1000,
+    impressions: 1000,
+    clicks: 10,
+    leads: 1,
+    asOf: now(),
+  });
+
+  await enforceSafety(ctx);
+  assert.deepEqual(paused, [campaign.campaignId], 'the stop-loss still has to stop the spend');
+  ctx.store.close();
+});

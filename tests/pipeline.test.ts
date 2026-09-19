@@ -47,9 +47,18 @@ test('intake deduplicates a replayed webhook and honours suppression', () => {
   assert.equal(replay.status, 'duplicate');
   assert.equal(store.countLeads(runId), 1);
 
-  store.suppress('+919999999999', 'prior opt-out');
-  const suppressed = intakeLead(store, G, runId, { ...VALID_LEAD, phone: '9999999999' });
+  // A real number, not ten identical digits. '9999999999' is refused by toE164
+  // as "one repeated digit" before suppression is ever consulted, so this
+  // assertion held with the suppression branch deleted entirely.
+  const optedOut = '9812345678';
+  store.suppress('+91' + optedOut, 'prior opt-out');
+  const suppressed = intakeLead(store, G, runId, { ...VALID_LEAD, phone: optedOut, adId: 'ad_other' });
   assert.equal(suppressed.status, 'rejected');
+  assert.match(
+    suppressed.status === 'rejected' ? suppressed.reason : '',
+    /suppression list/,
+    'rejected for being suppressed, not for being an unusable number',
+  );
   store.close();
 });
 

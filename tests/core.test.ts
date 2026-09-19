@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isSupportedCurrency, maskPhone, minorUnitsPer, PhoneError, redact, toE164 } from '../src/core/util.ts';
+import { minorFromFlag, type Args } from '../src/cli/args.ts';
+import { isSupportedCurrency, maskPhone, minorUnitsPer, PhoneError, redact, toE164, money } from '../src/core/util.ts';
 import {
   assertBudgetWithinCaps,
   assertGeoAllowed,
@@ -163,4 +164,33 @@ test('the test budget is a total, so the projection spans the whole window', () 
 
   assert.throws(() => assertBudgetWithinCaps(g, 30000, 0, 0), /window/, 'a zero-day window is not a campaign');
   assert.throws(() => assertBudgetWithinCaps(g, 30000, 0, Number.NaN), /window/);
+});
+
+test('money renders the amount a person is being asked to approve', () => {
+  // This string is what gate #1 shows the human authorising the spend. It was
+  // possible to drop the /100 entirely - turning INR 5,000.00 into INR
+  // 500000.00 - and the whole suite stayed green, because nothing anywhere
+  // asserted a rendered amount.
+  assert.equal(money(500000, 'INR'), 'INR 5000.00');
+  assert.equal(money(1000, 'INR'), 'INR 10.00');
+  assert.equal(money(1, 'INR'), 'INR 0.01');
+  assert.equal(money(0, 'INR'), 'INR 0.00');
+  assert.equal(money(-2550, 'INR'), '-INR 25.50');
+  assert.equal(money(123456789, 'USD'), 'USD 1234567.89');
+});
+
+test('major units convert to minor without floating point drift', () => {
+  // 700 and 4999.99 both multiply exactly in IEEE-754, so the two values the
+  // CLI tests used could not catch a missing Math.round. 4.35 * 100 is
+  // 434.99999999999994, and that would reach Meta as a budget integer.
+  for (const [major, minor] of [
+    [4.35, 435],
+    [8.29, 829],
+    [1.15, 115],
+    [700, 70000],
+    [4999.99, 499999],
+  ] as Array<[number, number]>) {
+    const args = { command: 'publish', flags: { budget: String(major) }, positional: [] } as unknown as Args;
+    assert.equal(minorFromFlag(args, 'budget'), minor, `${major} major is ${minor} minor`);
+  }
 });

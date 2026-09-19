@@ -199,12 +199,16 @@ const SPEND_TRIGGERS = new Set(['stop-loss', 'test budget']);
  * budget change.
  */
 export async function enforceSafety(ctx: Context, options: SafetyOptions = {}): Promise<SafetyReport> {
-  const before = ctx.store.emergencyStop().engaged;
   const report = runSafetyCheck(ctx, options);
-  if (!report.engaged || before) return report;
 
-  const trigger = ctx.store.emergencyStop().trigger ?? '';
-  if (!SPEND_TRIGGERS.has(trigger)) return report;
+  // Any spend finding, on any pass - not only the pass that engaged the stop.
+  // Keying off the stop's own trigger meant a stop engaged for something else
+  // first, a webhook outage or a manual pause, swallowed every later stop-loss:
+  // the finding was detected on every pass and the early return skipped past it
+  // while the ad set kept spending.
+  const spend = report.stops.filter((f) => SPEND_TRIGGERS.has(f.check));
+  if (spend.length === 0) return report;
+  const trigger = spend[0]!.check;
 
   for (const run of ctx.store.listRuns().filter((r) => r.state === 'live')) {
     const campaign = ctx.store.getCampaign(run.runId);

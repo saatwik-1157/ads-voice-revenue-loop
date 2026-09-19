@@ -202,7 +202,11 @@ test('publishing without gate #1 is refused, and publishing twice creates one ca
 test('publishing over the cap is refused outright', async () => {
   const { store, runId, brief } = await seed();
   const meta = new MockMetaProvider(2);
-  const gate = requestGate1(store, G, runId, brief, 1000);
+  // Approved for the amount being published, so the daily cap is what this
+  // test exercises. It used to approve 1000 and publish the cap plus one,
+  // which would pass gate #1 today and meant the amount approved was never
+  // the thing under test.
+  const gate = requestGate1(store, G, runId, brief, G.maxDailySpendMinor + 1);
   approve(store, gate.approvalId, 'tester');
 
   await assert.rejects(
@@ -213,6 +217,35 @@ test('publishing over the cap is refused outright', async () => {
       }),
     /daily_cap/,
   );
+  store.close();
+});
+
+test('gate #1 binds the budget it approved, not merely that it was approved', async () => {
+  // The approver reads "Budget: INR 10.00/day" and grants it. Nothing compared
+  // that number to what was published, because it existed only inside the
+  // summary text: approve INR 10/day, publish at INR 1,500/day, 150x, and no
+  // check anywhere objected.
+  const { store, runId, brief } = await seed();
+  const meta = new MockMetaProvider(2);
+  const approvedMinor = 1000;
+  approve(store, requestGate1(store, G, runId, brief, approvedMinor).approvalId, 'tester');
+
+  await assert.rejects(
+    () =>
+      publishCampaign(store, meta, G, runId, brief, 'page_1', {
+        dailyBudgetMinor: approvedMinor * 150,
+        windowDays: 3,
+      }),
+    /gate_1_budget/,
+    'publishing above the approved amount needs a new approval',
+  );
+
+  // At or under what was approved is fine - the gate is a ceiling, not a quota.
+  const published = await publishCampaign(store, meta, G, runId, brief, 'page_1', {
+    dailyBudgetMinor: approvedMinor,
+    windowDays: 3,
+  });
+  assert.ok(published.campaign.campaignId, 'at the approved amount it publishes');
   store.close();
 });
 

@@ -134,6 +134,12 @@ export async function dispatchLead(
     throw err;
   }
 
+  // Recorded here, the moment the provider accepted it - not when the result
+  // comes back. Both call caps count these rows, so a call already dialling
+  // counts against them. Counting returned outcomes instead meant a cap of 25
+  // dispatched 60, and a cap of one attempt per person dialled them three
+  // times, because nothing in flight was visible to either check.
+  store.recordCallAttempt(lead);
   store.setLeadCallStatus(lead.leadId, 'dispatched');
   store.audit(lead.runId, 'voice', 'call.dispatched', {
     leadId: lead.leadId,

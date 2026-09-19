@@ -351,7 +351,12 @@ async function handle(
     if (requires('admin')) return;
     if (limited('write')) return;
     const body = await readBody(req);
-    const payload = parseJson(body) as { leadId?: unknown; amountMinor?: unknown; source?: unknown };
+    const payload = parseJson(body) as {
+      leadId?: unknown;
+      amountMinor?: unknown;
+      source?: unknown;
+      eventId?: unknown;
+    };
 
     // Revenue is the number every KEEP/KILL/SCALE decision is made from, so it
     // is the worst field in the system to take on trust. This used to write
@@ -366,7 +371,14 @@ async function handle(
     const source = payload.source === undefined ? 'manual' : payload.source;
     if (typeof source !== 'string') throw new HttpError(400, 'source must be a string');
 
-    const ok = recordExternalRevenue(ctx.store, leadId, amountMinor, source);
+    // Identifies the sale, so a retry is the same sale and a second sale is a
+    // second one. Optional, and absent means the body itself: posting an
+    // identical body twice records once, while a different amount records
+    // separately. Supply one explicitly if your system has an invoice id.
+    const eventId = payload.eventId === undefined ? hashBody(body) : payload.eventId;
+    if (typeof eventId !== 'string' || !eventId) throw new HttpError(400, 'eventId must be a non-empty string');
+
+    const ok = recordExternalRevenue(ctx.store, leadId, amountMinor, source, eventId);
     json(res, ok ? 200 : 404, { ok });
     return;
   }

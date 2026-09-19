@@ -91,7 +91,10 @@ export function handleCallWebhook(store: Store, raw: RawCallResult): WebhookResu
       // Only a won sale counts as revenue. An expected value on a pending
       // appointment is a forecast, and forecasts must not move ROAS.
       if (outcome.saleStatus === 'won' && outcome.expectedValueMinor > 0) {
-        store.recordRevenue(leadId, outcome.expectedValueMinor, 'voice_agent');
+        // Keyed on the call, not the lead. A redelivery of this call is the
+        // same event and dedupes; a second call that also converts is a second
+        // sale and adds to it.
+        store.recordRevenue(leadId, outcome.expectedValueMinor, 'voice_agent', `call:${outcome.callId}`);
         // Money moving is the single most important thing that happens here, so
         // it gets its own entry rather than being implied by the call outcome.
         store.audit(lead.runId, 'voice', 'revenue.recorded', {
@@ -117,11 +120,25 @@ export function handleCallWebhook(store: Store, raw: RawCallResult): WebhookResu
 }
 
 /** Record a conversion that arrives from the payment system rather than the call. */
-export function recordExternalRevenue(store: Store, leadId: string, amountMinor: number, source: string): boolean {
+/**
+ * Revenue posted from outside - a CRM, a payment webhook, a person.
+ *
+ * `eventId` is the caller's identifier for the sale. Posting the same one twice
+ * is the same sale and changes nothing; posting a different one is a second
+ * sale and adds. Without it a correction or an upsell overwrote whatever the
+ * voice agent had already recorded.
+ */
+export function recordExternalRevenue(
+  store: Store,
+  leadId: string,
+  amountMinor: number,
+  source: string,
+  eventId: string,
+): boolean {
   const lead = store.getLead(leadId);
   if (!lead) return false;
-  store.recordRevenue(leadId, amountMinor, source);
-  store.audit(lead.runId, 'system', 'revenue.recorded', { leadId, amountMinor, source });
+  store.recordRevenue(leadId, amountMinor, source, `ext:${eventId}`);
+  store.audit(lead.runId, 'system', 'revenue.recorded', { leadId, amountMinor, source, eventId });
   return true;
 }
 

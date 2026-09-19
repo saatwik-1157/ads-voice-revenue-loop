@@ -203,3 +203,37 @@ test('the event log can be filtered, which is the point of keeping it', () => {
   assert.equal(store.webhookFailuresSince('2000-01-01T00:00:00.000Z'), 1);
   assert.equal(store.webhookFailuresSince('2999-01-01T00:00:00.000Z'), 0);
 });
+
+test('a second genuine sale adds to the first rather than replacing it', () => {
+  // Revenue was keyed `rev_${leadId}` with INSERT OR REPLACE, so a lead could
+  // hold one revenue row ever. Three sales of 900, 500 and 200 reported as 200,
+  // while the audit trail recorded all three and nothing reconciled the two.
+  const s = new Store(':memory:');
+  const runId = s.createRun('revenue');
+  const intake = intakeLead(s, defaultGuardrails, runId, {
+    name: 'Asha R',
+    phone: '9876543210',
+    consent: true,
+    consentSource: 'meta_instant_form',
+    adId: 'ad_1',
+  });
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+  const leadId = intake.lead.leadId;
+
+  s.recordRevenue(leadId, 90000, 'voice_agent', 'call:call_1');
+  assert.equal(s.revenueMinor(runId), 90000);
+
+  // The same call redelivered - one event, recorded once.
+  s.recordRevenue(leadId, 90000, 'voice_agent', 'call:call_1');
+  assert.equal(s.revenueMinor(runId), 90000, 'a redelivery is the same sale');
+
+  // A second call to the same person that also converts.
+  s.recordRevenue(leadId, 50000, 'voice_agent', 'call:call_2');
+  assert.equal(s.revenueMinor(runId), 140000, 'a second sale adds');
+
+  // And an upsell posted from outside.
+  s.recordRevenue(leadId, 20000, 'crm', 'ext:invoice_77');
+  assert.equal(s.revenueMinor(runId), 160000, 'three sales, all of them counted');
+
+  s.close();
+});

@@ -104,6 +104,21 @@ CREATE TABLE IF NOT EXISTS calls (
   received_at TEXT NOT NULL
 );
 
+-- A call the moment it is placed, not when its result comes back.
+--
+-- maxCallsPerDay and maxCallAttemptsPerLead were both counted from the calls
+-- table, which only the inbound result webhook writes. A call already dialling
+-- counted as zero, so with a cap of 25 the system dispatched 60, and a cap of
+-- one attempt per person dialled the same number three times. The caps are
+-- about the phone ringing, so they have to be counted when it rings.
+CREATE TABLE IF NOT EXISTS call_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  lead_id TEXT NOT NULL REFERENCES leads(lead_id),
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
+  phone_e164 TEXT NOT NULL,
+  dispatched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS spend (
   spend_id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -220,6 +235,8 @@ CREATE INDEX IF NOT EXISTS idx_approvals_run_status ON approvals(run_id, status)
 CREATE INDEX IF NOT EXISTS idx_audit_kind ON audit(kind);
 CREATE INDEX IF NOT EXISTS idx_ads_campaign ON ads(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_briefs_run ON briefs(run_id);
+CREATE INDEX IF NOT EXISTS idx_call_attempts_phone ON call_attempts(run_id, phone_e164);
+CREATE INDEX IF NOT EXISTS idx_call_attempts_at ON call_attempts(dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_webhook_status ON webhook_events(status, received_at);
 `;
 
@@ -249,10 +266,26 @@ function rebuildWithConstraints(db: DatabaseSync, table: string): void {
   const carried = existing.filter((c) => newCols.has(c));
   const cols = carried.map((c) => `"${c}"`).join(', ');
 
-  db.exec(`ALTER TABLE ${table} RENAME TO ${table}_migrating`);
-  db.exec(wanted);
-  db.exec(`INSERT INTO ${table} (${cols}) SELECT ${cols} FROM ${table}_migrating`);
-  db.exec(`DROP TABLE ${table}_migrating`);
+  // ALTER TABLE RENAME rewrites foreign keys in *other* tables to follow the
+  // new name. Every table this one rebuilds is a parent, so without this any
+  // table already referencing it ends up pointing at `<table>_migrating`, which
+  // is then dropped - leaving a reference to a table that does not exist. It
+  // stayed invisible only because no table created before this migration
+  // referenced a rebuilt one; adding call_attempts to the schema exposed it as
+  // a foreign key violation naming `leads_migrating`.
+  //
+  // legacy_alter_table makes RENAME leave other tables alone, which is what a
+  // rebuild wants: the new table has the same name, so their references are
+  // already correct.
+  db.exec('PRAGMA legacy_alter_table = ON');
+  try {
+    db.exec(`ALTER TABLE ${table} RENAME TO ${table}_migrating`);
+    db.exec(wanted);
+    db.exec(`INSERT INTO ${table} (${cols}) SELECT ${cols} FROM ${table}_migrating`);
+    db.exec(`DROP TABLE ${table}_migrating`);
+  } finally {
+    db.exec('PRAGMA legacy_alter_table = OFF');
+  }
 }
 
 interface Migration {
@@ -293,6 +326,30 @@ const MIGRATIONS: Migration[] = [
       db.exec(SCHEMA);
     },
   },
+  {
+    version: 3,
+    name: 'call_attempts',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS call_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        lead_id TEXT NOT NULL REFERENCES leads(lead_id),
+        run_id TEXT NOT NULL REFERENCES runs(run_id),
+        phone_e164 TEXT NOT NULL,
+        dispatched_at TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_call_attempts_phone ON call_attempts(run_id, phone_e164)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_call_attempts_at ON call_attempts(dispatched_at)');
+      // Every call that already came back was placed at some point. Backfilling
+      // from them keeps the caps honest on an existing database rather than
+      // handing everyone a fresh allowance.
+      db.exec(`INSERT OR IGNORE INTO call_attempts (attempt_id, lead_id, run_id, phone_e164, dispatched_at)
+               SELECT 'bf_' || c.call_id, c.lead_id, l.run_id, l.phone_e164, c.received_at
+               FROM calls c
+               JOIN leads l ON l.lead_id = c.lead_id
+               -- A backfill must not be the thing that introduces an orphan.
+               JOIN runs r ON r.run_id = l.run_id`);
+    },
+  }
 ];
 
 /**
@@ -1014,14 +1071,21 @@ export class Store {
    * get the cap twice over. Scoped to the run: a genuinely new inquiry in a
    * later campaign is not the same as being dialled repeatedly about this one.
    */
+  /** How many times this person has been dialled on this run. */
   callCountForPhone(runId: string, phoneE164: string): number {
     const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM calls c JOIN leads l ON l.lead_id = c.lead_id
-         WHERE l.run_id = ? AND l.phone_e164 = ?`,
-      )
+      .prepare('SELECT COUNT(*) AS n FROM call_attempts WHERE run_id = ? AND phone_e164 = ?')
       .get(runId, phoneE164) as { n: number };
     return row.n;
+  }
+
+  /** Record that a call was placed. Counted by both call caps. */
+  recordCallAttempt(lead: { leadId: string; runId: string; phoneE164: string }, at = now()): void {
+    this.db
+      .prepare(
+        'INSERT INTO call_attempts (attempt_id, lead_id, run_id, phone_e164, dispatched_at) VALUES (?,?,?,?,?)',
+      )
+      .run(id('att'), lead.leadId, lead.runId, lead.phoneE164, at);
   }
 
   setLeadCallStatus(leadId: string, status: Lead['callStatus']): void {
@@ -1043,7 +1107,9 @@ export class Store {
 
   callsToday(): number {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    return (this.db.prepare('SELECT COUNT(*) as n FROM calls WHERE received_at >= ?').get(since) as { n: number }).n;
+    return (
+      this.db.prepare('SELECT COUNT(*) as n FROM call_attempts WHERE dispatched_at >= ?').get(since) as { n: number }
+    ).n;
   }
 
   // --- suppression -------------------------------------------------------
@@ -1103,12 +1169,22 @@ export class Store {
     };
   }
 
-  recordRevenue(leadId: string, amountMinor: number, source: string): void {
+  /**
+   * Record revenue against a lead, once per event.
+   *
+   * `eventKey` identifies the thing that earned the money - a call, an external
+   * posting - and is what makes a redelivery idempotent. It used to be the lead
+   * id, with INSERT OR REPLACE, so a lead could only ever hold one revenue row:
+   * a second genuine sale, or a later upsell, silently replaced the first.
+   * Three sales of 900, 500 and 200 were reported as 200, while the audit trail
+   * recorded all three and nothing reconciled the two.
+   */
+  recordRevenue(leadId: string, amountMinor: number, source: string, eventKey: string): void {
     this.db
       .prepare(
         'INSERT OR REPLACE INTO revenue (revenue_id, lead_id, amount_minor, source, recorded_at) VALUES (?,?,?,?,?)',
       )
-      .run(`rev_${leadId}`, leadId, amountMinor, source, now());
+      .run(`rev_${eventKey}`, leadId, amountMinor, source, now());
   }
 
   recordSpend(p: SpendPoint): void {

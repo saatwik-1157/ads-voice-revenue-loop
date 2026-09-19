@@ -56,7 +56,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 222 tests: guardrails, the loop, retries, scheduling, creative, hostile input
+npm test                      # 275 tests: guardrails, the loop, retries, scheduling, creative, access, logging, hostile input
 ```
 
 ### Credentials
@@ -86,11 +86,14 @@ writer anyway with a confusing error in between.
 ### Commands
 
 ```bash
+node src/cli.ts readiness                           # can it run, and may it spend money
 node src/cli.ts guardrails                          # print the active control layer
 node src/cli.ts brief --deal-value 5000             # phase B: brief + artwork, opens gate #1
+node src/cli.ts runs                                # list runs
 node src/cli.ts approvals                           # what is waiting on a human
 node src/cli.ts assets [runId] [--force]            # produce + upload artwork
 node src/cli.ts approve <approvalId> --by "Nitesh"  # phase C
+node src/cli.ts reject <approvalId> --by "Nitesh" --reason "..."
 node src/cli.ts publish <runId> --budget 700 --days 5 --activate
 node src/cli.ts sync <runId>                        # pull Meta insights
 node src/cli.ts economics <runId>                   # the funnel numbers on their own
@@ -106,6 +109,7 @@ node src/cli.ts cycles [runId]                      # what the loop has been doi
 node src/cli.ts serve --schedule --every 6h         # webhook middleware + the loop
 node src/cli.ts contract-test                       # probe the voice API before trusting it
 node src/cli.ts preflight [--lead-form ID]          # read-only checks on the real ad account
+node src/cli.ts safety [--engage|--release --by N]  # fast safety checks + the emergency stop
 ```
 
 `npm run ci` runs lint, typecheck and tests together - the same three things CI runs on every push.
@@ -479,6 +483,16 @@ These are enforced in code, not just documented:
 
 Ordered so that each step is cheap and the expensive ones come last. Nothing before step 6 spends
 anything.
+
+**Ask the system first.** One command answers both questions - whether it can run, and whether it
+may spend money - and names every blocker with what to do about it:
+
+```bash
+node src/cli.ts readiness
+```
+
+It exits 0 only when both gates are clear, so it works as a guard in a script. Being deployable but
+not live-ready is the normal state; the output says so rather than leaving you to wonder.
 
 **Step 0 is a public URL.** Meta will not deliver leadgen webhooks over plain HTTP, and
 `contract-test` refuses a `PUBLIC_BASE_URL` that is not `https://`, because a provider cannot reach

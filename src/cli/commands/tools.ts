@@ -5,11 +5,28 @@ import { runDemo } from '../../demo/e2e.ts';
 import { probeDispatchContract } from '../../voice/contract.ts';
 import { preflight } from '../../meta/preflight.ts';
 import { inspectSafety, formatSafety } from '../../safety/monitor.ts';
+import { assessReadiness, formatReadiness } from '../../readiness.ts';
 import { generateBrief } from '../../brief/generator.ts';
 import { id, now } from '../../core/util.ts';
 import type { Lead } from '../../core/types.ts';
 
 export const toolCommands: Command[] = [
+  {
+    name: 'readiness',
+    usage: '',
+    summary: 'Is this ready to deploy, and is it ready to spend money',
+    run: (ctx) => {
+      // Two gates, deliberately separate. Being able to run as a service and
+      // being allowed to spend money are different questions, and answering
+      // them together is how something goes live by accident.
+      const report = assessReadiness(ctx);
+      write(formatReadiness(report));
+      // Exit 0 only when both gates are clear, so this is usable in a script
+      // that should refuse to proceed.
+      return Promise.resolve(report.liveReady ? 0 : 1);
+    },
+  },
+
   {
     name: 'demo',
     usage: '[--days N]',
@@ -93,6 +110,15 @@ export const toolCommands: Command[] = [
 
       const failures = result.findings.filter((f) => f.status === 'fail').length;
       write(failures ? `\n${failures} check(s) failed - see docs/omnidimension.md` : '\nno failures');
+
+      // Only a live probe counts. A dry run builds the request without sending
+      // it, which says nothing about whether the provider accepts it.
+      if (failures === 0 && live) {
+        ctx.store.audit(null, 'human', 'contract_test.passed', {
+          checks: result.findings.length,
+          idempotency: flagIsSet(args, 'idempotency'),
+        });
+      }
       return failures ? 1 : 0;
     },
   },
@@ -127,6 +153,16 @@ export const toolCommands: Command[] = [
           ? `\n${failures} check(s) failed. Nothing was created and nothing was spent.`
           : '\nno failures. Nothing was created and nothing was spent.',
       );
+
+      // Recorded so `readiness` can answer "has the ad account ever been
+      // verified" as a fact rather than as something somebody remembers. Only
+      // a live run counts: a mock pass proves nothing about the credentials.
+      if (failures === 0 && ctx.env.mode === 'live') {
+        ctx.store.audit(null, 'human', 'preflight.passed', {
+          checks: result.findings.length,
+          warnings: result.findings.filter((f) => f.status === 'warn').length,
+        });
+      }
       return failures ? 1 : 0;
     },
   },

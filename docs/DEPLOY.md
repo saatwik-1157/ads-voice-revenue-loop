@@ -234,6 +234,7 @@ got a call. Use the tunnel to get live and prove the loop; move to a VPS before 
 ## Operating it
 
 ```bash
+docker compose exec app node src/cli.ts readiness   # can it run, and may it spend
 docker compose logs -f app                    # JSON, one object per line
 docker compose exec app node src/cli.ts safety
 docker compose exec app node src/cli.ts safety --engage --reason "..." --by "you"

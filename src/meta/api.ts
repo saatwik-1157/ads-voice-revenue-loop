@@ -4,6 +4,7 @@ import type { CreativeVariant } from '../core/types.ts';
 import { redact } from '../core/util.ts';
 import { parseRetryAfter, withRetry, type RetryOptions } from '../core/retry.ts';
 import { log } from '../core/log.ts';
+import { breakerFor } from '../core/breaker.ts';
 
 /**
  * Meta Marketing API client - the authorized interface.
@@ -19,6 +20,7 @@ export class MetaApiProvider implements MetaProvider {
   readonly #version: string;
   readonly #retry: RetryOptions;
   readonly #fetch: typeof fetch;
+  readonly #breaker = breakerFor('meta');
 
   constructor(opts: {
     accessToken: string;
@@ -99,10 +101,11 @@ export class MetaApiProvider implements MetaProvider {
     // than making a second campaign.
     if (idempotencyKey) headers['X-Business-Idempotency-Key'] = idempotencyKey;
 
-    const text = await withRetry(
-      `POST ${path}`,
-      () => this.#send(url, { method: 'POST', headers, body: form }),
-      this.#retry,
+    // The breaker wraps the whole operation, retries included: one call that
+    // exhausts its ladder is one failure. Wrapping each attempt instead would
+    // let a single flaky request push the circuit most of the way open.
+    const text = await this.#breaker.run(`POST ${path}`, () =>
+      withRetry(`POST ${path}`, () => this.#send(url, { method: 'POST', headers, body: form }), this.#retry),
     );
     return JSON.parse(text) as Record<string, string>;
   }
@@ -110,10 +113,8 @@ export class MetaApiProvider implements MetaProvider {
   async #get(path: string, params: Record<string, string>): Promise<Record<string, unknown>> {
     const url = new URL(`https://graph.facebook.com/${this.#version}/${path}`);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-    const text = await withRetry(
-      `GET ${path}`,
-      () => this.#send(url, { headers: { Authorization: `Bearer ${this.#token}` } }),
-      this.#retry,
+    const text = await this.#breaker.run(`GET ${path}`, () =>
+      withRetry(`GET ${path}`, () => this.#send(url, { headers: { Authorization: `Bearer ${this.#token}` } }), this.#retry),
     );
     return JSON.parse(text) as Record<string, unknown>;
   }

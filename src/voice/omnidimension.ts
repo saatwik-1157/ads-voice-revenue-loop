@@ -2,6 +2,7 @@ import type { DispatchInput, VoiceProvider } from './provider.ts';
 import { VoiceApiError } from './provider.ts';
 import { redact } from '../core/util.ts';
 import { parseRetryAfter, withRetry, type RetryOptions } from '../core/retry.ts';
+import { breakerFor } from '../core/breaker.ts';
 
 /**
  * OmniDimension outbound calling.
@@ -16,6 +17,7 @@ export class OmniDimensionProvider implements VoiceProvider {
   readonly #agentId: string;
   readonly #baseUrl: string;
   readonly #retry: RetryOptions;
+  readonly #breaker = breakerFor('omnidimension');
   readonly #fetch: typeof fetch;
 
   constructor(opts: {
@@ -63,7 +65,11 @@ export class OmniDimensionProvider implements VoiceProvider {
 
     // Retrying is safe only because of the idempotency key: the provider must
     // treat a replayed dispatch as the same call, not dial the person twice.
-    const text = await withRetry(
+    // Through the breaker, around the retries. A dialler that is down makes
+    // every lead wait out a full retry ladder before being deferred; failing
+    // fast defers them immediately and stops adding load to a provider that is
+    // already struggling.
+    const text = await this.#breaker.run('calls/dispatch', () => withRetry(
       'calls/dispatch',
       async () => {
         let res: Response;
@@ -89,7 +95,7 @@ export class OmniDimensionProvider implements VoiceProvider {
         return payload;
       },
       this.#retry,
-    );
+    ));
 
     const parsed = JSON.parse(text) as { requestId?: string; call_id?: string; id?: string };
     const callRef = parsed.requestId ?? parsed.call_id ?? parsed.id;

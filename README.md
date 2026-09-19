@@ -372,6 +372,14 @@ Four things make it safe to leave running:
   1.69× above happened. Both go through `withRunLock`; whichever arrives second is turned away and
   told why, rather than acting. The lease matters as much as the lock: a cycle killed mid-run releases
   it automatically rather than wedging the loop forever.
+- **A provider that is down stops being called.** Each provider has a circuit breaker: five
+  consecutive transient failures and it opens, so calls fail immediately instead of every cycle and
+  every lead waiting out its own retry ladder against something that is not answering. After thirty
+  seconds exactly one call goes through to find out whether it is back — one, because letting
+  everything queued behind the outage through at once is how a recovering provider gets knocked over
+  again. **A 4xx never opens it:** that is a bug in our request, and counting it would turn one bad
+  call of ours into an outage for everything else. An open circuit shows up in `readiness`, and a
+  lead that cannot be dialled is deferred rather than dropped.
 - **Failures are recorded, not thrown.** A provider outage ends that cycle with `error` in the
   `cycles` table and an audit event; the loop keeps its schedule. There is no catch-up burst either —
   if the process was down for a day, the right move is one cycle now, not twenty-four against stale

@@ -1,6 +1,7 @@
 import type { Context } from './orchestrator.ts';
 import { inspectSafety } from './safety/monitor.ts';
 import { money } from './core/util.ts';
+import { allBreakers } from './core/breaker.ts';
 
 /**
  * One answer to "is this ready".
@@ -197,6 +198,19 @@ export function assessReadiness(ctx: Context): ReadinessReport {
     state: 'pass',
     detail: `test budget ${money(g.maxTestBudgetMinor, g.currency)}, stop-loss ${money(g.stopLossMinor, g.currency)}, daily ${money(g.maxDailySpendMinor, g.currency)}`,
   });
+
+  // A provider this system has stopped calling. Not a blocker on its own - the
+  // circuit closes itself when the provider recovers - but it is the first
+  // thing worth knowing when nothing seems to be happening.
+  for (const b of allBreakers().filter((x) => x.state !== 'closed')) {
+    add({
+      gate: 'live',
+      name: `${b.provider} circuit`,
+      state: 'warn',
+      detail: `${b.state} after ${b.consecutiveFailures} consecutive failures: ${b.lastError ?? 'unknown'}`,
+      fix: 'the circuit closes itself once the provider answers again',
+    });
+  }
 
   const safety = inspectSafety(ctx);
   if (safety.engaged) {

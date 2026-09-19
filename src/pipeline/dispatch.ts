@@ -1,4 +1,5 @@
 import { OperationInFlightError, type Store } from '../store/db.ts';
+import { CircuitOpenError } from '../core/breaker.ts';
 import type { VoiceProvider } from '../voice/provider.ts';
 import type { Brief, Lead } from '../core/types.ts';
 import { isWithinCallWindow, type Guardrails } from '../config/guardrails.ts';
@@ -133,6 +134,19 @@ export async function dispatchLead(
     if (err instanceof OperationInFlightError) {
       store.audit(lead.runId, 'system', 'call.already_dispatching', { leadId: lead.leadId });
       return { status: 'deferred', leadId: lead.leadId, reason: 'a call to this lead is already being placed' };
+    }
+    // The dialler is down and the circuit is open. The lead is fine and should
+    // be called once the provider is back, so this defers rather than throwing
+    // - a thrown error here becomes a 500 on the lead webhook, which asks Meta
+    // to redeliver a lead we already hold.
+    if (err instanceof CircuitOpenError) {
+      const open: CircuitOpenError = err;
+      store.audit(lead.runId, 'system', 'call.deferred', {
+        leadId: lead.leadId,
+        reason: 'voice provider circuit open',
+        retryAfterMs: open.retryAfterMs,
+      });
+      return { status: 'deferred', leadId: lead.leadId, reason: open.message };
     }
     throw err;
   }

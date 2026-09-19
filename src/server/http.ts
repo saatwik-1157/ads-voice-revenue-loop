@@ -453,6 +453,11 @@ async function acceptLead(ctx: Context, value: Record<string, unknown>, explicit
   }
 
   const raw = source.field_data ? fromMetaLeadgen(source) : (source as RawLead);
+  // Meta's own id for this lead, when the delivery carried one. It is the
+  // identifier Meta dedupes on, and it survives a retry that changes or drops
+  // anything else - which the previous key, built from the ad id and the
+  // current hour, did not.
+  if (typeof value.leadgen_id === 'string' && value.leadgen_id) raw.providerLeadId = value.leadgen_id;
   const intake = intakeLead(ctx.store, ctx.guardrails, runId, raw);
   if (intake.status !== 'accepted') return intake;
 

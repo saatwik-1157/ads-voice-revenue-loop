@@ -165,7 +165,12 @@ export function budgetChangeNeedsApproval(
   proposedDailyMinor: number,
 ): { needed: boolean; reason: string } {
   if (proposedDailyMinor <= currentDailyMinor) return { needed: false, reason: 'decrease or no change' };
-  if (proposedDailyMinor > g.budgetApprovalThresholdMinor) {
+  // `>=`, not `>`. The proposal reaching this function has already been clamped
+  // to maxDailySpendMinor, and every shipped configuration sets the threshold at
+  // or above that cap - so a strict `>` could never be satisfied and this gate
+  // had never fired in any configuration. The budget climbed to the daily cap
+  // with no human ever involved.
+  if (proposedDailyMinor >= g.budgetApprovalThresholdMinor) {
     return {
       needed: true,
       reason: `proposed ${money(proposedDailyMinor, g.currency)} exceeds approval threshold ${money(g.budgetApprovalThresholdMinor, g.currency)}`,

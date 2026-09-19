@@ -4,6 +4,13 @@ import type { Guardrails } from '../config/guardrails.ts';
 import { fingerprint, id, maskPhone, now, PhoneError, toE164 } from '../core/util.ts';
 
 export interface RawLead {
+  /**
+   * The provider's own id for this lead, when there is one (Meta's
+   * `leadgen_id`). Preferred as the dedupe key, because it is the identifier
+   * the provider itself dedupes on and it survives a retry that drops or
+   * changes anything else in the payload.
+   */
+  providerLeadId?: string | null;
   name?: string;
   phone?: string;
   email?: string | null;
@@ -49,9 +56,18 @@ export function intakeLead(store: Store, g: Guardrails, runId: string, raw: RawL
     return reject(store, runId, `${maskPhone(phoneE164)} is on the suppression list`);
   }
 
-  // Same person, same ad, same hour is the same lead however many times the
-  // webhook fires.
-  const dedupeKey = fingerprint([runId, phoneE164, raw.adId ?? null, new Date().toISOString().slice(0, 13)]);
+  // Same person, same run, same lead - however many times the webhook fires and
+  // whatever it carries.
+  //
+  // The key used to include the ad id and the current hour. Both let one person
+  // become several lead rows, and a lead row is the denominator of CPL: a
+  // retry that crossed 11:59:59, or a redelivery that dropped ad_id, halved the
+  // apparent cost per lead of a campaign that had produced exactly one. The
+  // provider's own lead id is used when there is one, because that is the
+  // identifier the provider itself dedupes on.
+  const dedupeKey = fingerprint(
+    raw.providerLeadId ? [runId, 'provider', raw.providerLeadId] : [runId, phoneE164],
+  );
 
   const lead: Lead = {
     leadId: id('lead'),

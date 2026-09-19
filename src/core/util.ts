@@ -126,8 +126,28 @@ export function minorUnitsPer(currency: string): number {
  * silently misprice an account whose currency does not work that way, the
  * control layer refuses it - a stated limitation instead of a 100x surprise.
  */
+/**
+ * Codes this system has actually reasoned about.
+ *
+ * `Intl.NumberFormat` does not reject an unknown three-letter code - it
+ * defaults it to two fraction digits - so `minorUnitsPer` alone reported XYZ,
+ * ZZZ and BTC as supported currencies with 100 minor units each. The error
+ * message promised to catch "not a currency code" and did not. This list is
+ * every ISO 4217 code with two decimal places that a Meta ad account can be
+ * denominated in; adding one is a deliberate act, which is the point.
+ */
+const TWO_DECIMAL_CURRENCIES = new Set([
+  'AED', 'ARS', 'AUD', 'BDT', 'BGN', 'BRL', 'CAD', 'CHF', 'CNY', 'COP', 'CZK', 'DKK', 'EGP', 'EUR',
+  'GBP', 'HKD', 'HRK', 'HUF', 'IDR', 'ILS', 'INR', 'LKR', 'MAD', 'MXN', 'MYR', 'NGN', 'NOK', 'NZD',
+  'PEN', 'PHP', 'PKR', 'PLN', 'QAR', 'RON', 'RSD', 'RUB', 'SAR', 'SEK', 'SGD', 'THB', 'TRY', 'TWD',
+  'UAH', 'USD', 'VES', 'ZAR',
+]);
+
 export function isSupportedCurrency(currency: string): boolean {
+  if (!TWO_DECIMAL_CURRENCIES.has(currency.toUpperCase())) return false;
   try {
+    // Belt and braces: if a runtime ever disagrees about one of these, refuse
+    // rather than misprice by a factor of a hundred.
     return minorUnitsPer(currency) === 100;
   } catch {
     return false;

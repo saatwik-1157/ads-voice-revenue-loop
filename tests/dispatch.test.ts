@@ -84,18 +84,21 @@ test('one person is not dialled twice while the first call is still in flight', 
     consentSource: 'meta_instant_form',
     adId: 'ad_1',
   });
-  const second = intakeLead(store, g, runId, {
+  const again = intakeLead(store, g, runId, {
     name: 'Asha R',
     phone,
     consent: true,
     consentSource: 'meta_instant_form',
     adId: 'ad_2',
   });
-  if (first.status !== 'accepted' || second.status !== 'accepted') throw new Error('setup failed');
-  assert.notEqual(first.lead.leadId, second.lead.leadId, 'two ads, two lead rows - that is the setup');
+  if (first.status !== 'accepted') throw new Error('setup failed');
+  assert.equal(again.status, 'duplicate', 'intake collapses one person on one run to one lead');
+
+  // Belt and braces: even with a second row for the same phone, the cap binds.
+  const secondRow = { ...first.lead, leadId: 'lead_second_row', adId: 'ad_2' };
 
   const a = await dispatchLead(store, new MockVoiceProvider(3), g, first.lead, brief, 'http://x/hook');
-  const b = await dispatchLead(store, new MockVoiceProvider(3), g, second.lead, brief, 'http://x/hook');
+  const b = await dispatchLead(store, new MockVoiceProvider(3), g, secondRow, brief, 'http://x/hook');
 
   assert.equal(a.status, 'dispatched');
   assert.equal(b.status, 'suppressed', 'the same person must not ring twice, result or no result');

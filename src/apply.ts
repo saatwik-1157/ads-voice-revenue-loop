@@ -84,6 +84,33 @@ export async function applyRecommendation(
   }
 
   if (plan.needsApproval) {
+    // A raise a person has already approved. Matching on `from` is what makes
+    // it single use: once applied, the campaign's budget is the approved `to`
+    // and this approval no longer describes a move from where we now are.
+    const granted = ctx.store
+      .approvedApprovals(runId, GATE_2)
+      .map((a) => ({ a, d: safeDetail(a.detail) }))
+      .find(
+        ({ d }) =>
+          typeof d.from === 'number' &&
+          typeof d.to === 'number' &&
+          d.from === campaign.dailyBudgetMinor &&
+          d.to >= plan.proposedDailyMinor,
+      );
+    if (granted) {
+      // Never above what was approved, even if the engine now wants more.
+      const approvedTo = Math.min(granted.d.to as number, plan.proposedDailyMinor);
+      await ctx.meta.setDailyBudget(campaign.adsetId, approvedTo);
+      ctx.store.setCampaignBudget(campaign.campaignId, approvedTo);
+      ctx.store.audit(runId, 'agent', 'budget.raised', {
+        from: campaign.dailyBudgetMinor,
+        to: approvedTo,
+        approvalId: granted.a.approvalId,
+        reason: 'gate #2 approved',
+      });
+      return { kind: 'budget_raised', from: campaign.dailyBudgetMinor, to: approvedTo, plan, pausedAds };
+    }
+
     // An unattended loop must not file the same request every cycle. One
     // pending gate #2 is a decision waiting on a person; a hundred is noise
     // that buries it.
@@ -160,8 +187,18 @@ export async function pauseKilledAds(
 ): Promise<number> {
   const holdout = new Set(plan.holdoutAdIds);
   let paused = 0;
+  const alreadyPaused = new Set(
+    ctx.store
+      .listAds(ctx.store.getCampaign(runId)?.campaignId ?? '')
+      .filter((a) => a.status === 'PAUSED')
+      .map((a) => a.adId),
+  );
   for (const ad of rec.perAd) {
     if (ad.decision !== 'KILL') continue;
+    // A KILL that does not end the run was re-applied on every cycle: the same
+    // six ads paused again and again, six more provider writes each time, and
+    // an audit trail claiming eighteen pauses for six ads.
+    if (alreadyPaused.has(ad.adId)) continue;
     if (holdout.has(ad.adId)) {
       ctx.store.audit(runId, 'agent', 'ad.pause_refused', { adId: ad.adId, reason: 'reserved as scale holdout' });
       continue;
@@ -174,6 +211,16 @@ export async function pauseKilledAds(
     paused += 1;
   }
   return paused;
+}
+
+/** Approval detail is JSON written by this system; a bad row should not throw. */
+function safeDetail(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 /** One-line description of what an apply actually did, for logs and the CLI. */

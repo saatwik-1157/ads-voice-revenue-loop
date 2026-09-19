@@ -703,6 +703,23 @@ export class Store {
     return this.getApproval(approvalId)?.runId ?? null;
   }
 
+  /**
+   * Approvals a person has granted for this gate, newest first.
+   *
+   * Nothing read these, so an approved budget raise was never applied: `apply`
+   * looked only for a *pending* request, found none once it had been approved,
+   * and filed a fresh one on the next cycle. Approving was what unblocked the
+   * spam it was written to prevent, and the budget never moved.
+   */
+  approvedApprovals(runId: string, gate: string): Array<{ approvalId: string; subject: string; detail: string }> {
+    return this.db
+      .prepare(
+        `SELECT approval_id as approvalId, subject, detail FROM approvals
+         WHERE run_id = ? AND gate = ? AND status = 'approved' ORDER BY rowid DESC`,
+      )
+      .all(runId, gate) as unknown as Array<{ approvalId: string; subject: string; detail: string }>;
+  }
+
   pendingApprovals(runId: string): Array<{ approvalId: string; gate: string; subject: string; detail: string }> {
     return this.db
       .prepare(
@@ -975,8 +992,23 @@ export class Store {
     if (Number(inserted.changes) === 1) return { eventId, duplicate: false };
 
     const existing = this.db
-      .prepare('SELECT event_id as eventId FROM webhook_events WHERE provider = ? AND provider_event_id = ?')
-      .get(input.provider, key) as { eventId: string } | undefined;
+      .prepare(
+        'SELECT event_id as eventId, status FROM webhook_events WHERE provider = ? AND provider_event_id = ?',
+      )
+      .get(input.provider, key) as { eventId: string; status: string } | undefined;
+
+    // A delivery we accepted and then failed to process is not a duplicate to
+    // be waved through - it is work still owed. The provider was told to retry
+    // by the 500 it got, and answering that retry with `200 duplicate` meant
+    // the retry was the last chance and the lead or the sale was lost for good.
+    // Nothing surfaced: the row sat at 'failed' and the money simply never
+    // appeared, understating ROAS and killing working campaigns.
+    if (existing?.status === 'failed') {
+      this.db
+        .prepare("UPDATE webhook_events SET status = 'received', processed_at = NULL, failure_reason = NULL WHERE event_id = ?")
+        .run(existing.eventId);
+      return { eventId: existing.eventId, duplicate: false };
+    }
     return { eventId: existing?.eventId ?? eventId, duplicate: true };
   }
 

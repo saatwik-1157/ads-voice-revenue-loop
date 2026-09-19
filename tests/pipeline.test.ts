@@ -347,9 +347,11 @@ test('the per-lead attempt cap is a rule, not a line in the config', async () =>
 });
 
 test('the attempt cap counts the person, not the lead row', async () => {
-  // The dedupe key includes the ad id, so one person answering two ads becomes
-  // two lead rows. Counting attempts per row gave them the cap twice over -
-  // four calls under a rule that says two. The rule is about a phone ringing.
+  // Intake now collapses one person on one run to a single lead row, so the
+  // two-ads case cannot arise through the front door any more. The cap still
+  // has to count the person rather than the row - a lead row can reach the
+  // store by other routes, and a rule about a phone ringing must not depend on
+  // how many rows happen to point at that phone.
   const store = freshStore();
   const voice = new MockVoiceProvider(11);
   const { brief } = await generateBrief(G);
@@ -358,9 +360,14 @@ test('the attempt cap counts the person, not the lead row', async () => {
   const cap = { ...G, maxCallAttemptsPerLead: 2 };
 
   const viaAdA = intakeLead(store, G, runId, { ...VALID_LEAD, adId: 'ad_a' });
-  const viaAdB = intakeLead(store, G, runId, { ...VALID_LEAD, adId: 'ad_b' });
-  if (viaAdA.status !== 'accepted' || viaAdB.status !== 'accepted') throw new Error('setup failed');
-  assert.notEqual(viaAdA.lead.leadId, viaAdB.lead.leadId, 'two ads, two lead rows, one person');
+  const again = intakeLead(store, G, runId, { ...VALID_LEAD, adId: 'ad_b' });
+  if (viaAdA.status !== 'accepted') throw new Error('setup failed');
+  assert.equal(again.status, 'duplicate', 'one person on one run is one lead, whichever ad they answered');
+
+  // A second row for the same phone - the shape the cap has to survive whatever
+  // produced it. The dispatch path reads the phone off the lead it is handed,
+  // so this does not need to be in the store to exercise the rule.
+  const viaAdB = { status: 'accepted' as const, lead: { ...viaAdA.lead, leadId: 'lead_second_row', adId: 'ad_b' } };
   assert.equal(viaAdA.lead.phoneE164, viaAdB.lead.phoneE164);
 
   let placed = 0;

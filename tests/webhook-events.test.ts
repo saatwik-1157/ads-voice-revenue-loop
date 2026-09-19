@@ -237,3 +237,42 @@ test('a second genuine sale adds to the first rather than replacing it', () => {
 
   s.close();
 });
+
+test('a delivery that failed to process is retryable, not waved through', () => {
+  // The provider was told to retry by the 500 it got, and the retry was then
+  // answered `200 duplicate` without being processed. That retry was the last
+  // chance, so the lead or the sale was lost for good - and nothing surfaced,
+  // because the row simply sat at 'failed' while the money never appeared.
+  const s = new Store(':memory:');
+
+  const first = s.recordWebhookEvent({
+    provider: 'omnidimension',
+    providerEventId: 'call_99',
+    payloadHash: 'h99',
+    signatureVerified: true,
+  });
+  assert.equal(first.duplicate, false);
+  s.finishWebhookEvent(first.eventId, 'failed', 'database was busy');
+
+  const retry = s.recordWebhookEvent({
+    provider: 'omnidimension',
+    providerEventId: 'call_99',
+    payloadHash: 'h99',
+    signatureVerified: true,
+  });
+  assert.equal(retry.duplicate, false, 'work still owed is not a duplicate');
+  assert.equal(retry.eventId, first.eventId, 'and it is the same delivery, not a second row');
+
+  s.finishWebhookEvent(retry.eventId, 'processed');
+
+  // Once it has actually been processed, a further redelivery is a duplicate.
+  const third = s.recordWebhookEvent({
+    provider: 'omnidimension',
+    providerEventId: 'call_99',
+    payloadHash: 'h99',
+    signatureVerified: true,
+  });
+  assert.equal(third.duplicate, true, 'a processed delivery is done');
+  assert.equal(s.listWebhookEvents({ provider: 'omnidimension', limit: 100 }).filter((e) => e.providerEventId === 'call_99').length, 1);
+  s.close();
+});

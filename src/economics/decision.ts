@@ -221,7 +221,12 @@ function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decisio
   // creative for a tracking fault - the exact confusion the run-level rules
   // are ordered to avoid.
   if (e.leads === 0) return attributionIntact ? 'KILL' : 'KEEP';
-  if (e.cplMinor !== null && e.cplMinor > brief.successMetrics.targetCplMinor * 2) return 'KILL';
+  // The same reasoning one line up, and it was missing here. This CPL divides
+  // the ad's FULL spend by only the leads that could be traced to it, so with
+  // attribution partly lost it reads high for a creative that is doing fine:
+  // 600 spend and 7 real leads, 4 of them untraceable, shows as a CPL of 200
+  // against a true 86 and gets the creative paused for a tracking fault.
+  if (attributionIntact && e.cplMinor !== null && e.cplMinor > brief.successMetrics.targetCplMinor * 2) return 'KILL';
   if (e.qualifiedLeads === 0 && e.connectedLeads >= 5) return 'ITERATE';
   return 'KEEP';
 }

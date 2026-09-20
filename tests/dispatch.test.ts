@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Store } from '../src/store/db.ts';
 import { defaultGuardrails, type Guardrails } from '../src/config/guardrails.ts';
 import { generateBrief } from '../src/brief/generator.ts';
@@ -9,7 +12,8 @@ import { MockMetaProvider } from '../src/meta/mock.ts';
 import { MockVoiceProvider } from '../src/voice/mock.ts';
 import { intakeLead } from '../src/pipeline/intake.ts';
 import { dispatchLead } from '../src/pipeline/dispatch.ts';
-import type { Brief } from '../src/core/types.ts';
+import { CircuitOpenError } from '../src/core/breaker.ts';
+import type { Brief, Lead } from '../src/core/types.ts';
 
 /**
  * The call caps, counted when the phone rings.
@@ -106,45 +110,59 @@ test('one person is not dialled twice while the first call is still in flight', 
   store.close();
 });
 
-test('the backfill keeps call history that predates the attempts table', () => {
-  // Without it, upgrading would hand everyone who had already been called a
-  // fresh allowance.
-  const store = new Store(':memory:');
-  const runId = store.createRun('backfill');
-  const intake = intakeLead(store, G, runId, {
-    name: 'Asha R',
-    phone: '9876543210',
-    consent: true,
-    consentSource: 'meta_instant_form',
-    adId: 'ad_1',
-  });
-  if (intake.status !== 'accepted') throw new Error('setup failed');
+test('the migration backfills call history from a database that predates the table', () => {
+  // This used to run its own copy of the backfill INSERT and assert that its
+  // own SQL worked - the production migration was never invoked, and the two
+  // had already diverged: the real one joins `runs` so it cannot introduce an
+  // orphan, the test's copy did not.
+  //
+  // Now it builds a v2-shaped database by hand and opens a Store, which is what
+  // actually runs migration 3.
+  const dir = mkdtempSync(join(tmpdir(), 'fl-backfill-'));
+  const path = join(dir, 'autopilot.db');
 
-  // A call that came back, with no attempt row - what a pre-migration database
-  // looks like.
-  store.saveCall({
-    callId: 'call_old',
-    leadId: intake.lead.leadId,
-    connected: true,
-    qualified: true,
-    intentScore: 7,
-    objection: null,
-    appointmentBooked: false,
-    saleStatus: 'lost',
-    expectedValueMinor: 0,
-    nextAction: 'nurture',
-    summary: 'an old call',
-    optOut: false,
-    receivedAt: new Date().toISOString(),
-  });
-  store.db.exec('DELETE FROM call_attempts');
-  assert.equal(store.callCountForPhone(runId, '+919876543210'), 0, 'no attempt rows yet');
+  {
+    const store = new Store(path);
+    const runId = store.createRun('backfill');
+    const intake = intakeLead(store, G, runId, {
+      name: 'Asha R',
+      phone: '9876543210',
+      consent: true,
+      consentSource: 'meta_instant_form',
+      adId: 'ad_1',
+    });
+    if (intake.status !== 'accepted') throw new Error('setup failed');
+    store.saveCall({
+      callId: 'call_old',
+      leadId: intake.lead.leadId,
+      connected: true,
+      qualified: true,
+      intentScore: 7,
+      objection: null,
+      appointmentBooked: false,
+      saleStatus: 'lost',
+      expectedValueMinor: 0,
+      nextAction: 'nurture',
+      summary: 'an old call',
+      optOut: false,
+      receivedAt: new Date().toISOString(),
+    });
+    // Wind it back to what a pre-migration-3 database looks like.
+    store.db.exec('DROP TABLE call_attempts');
+    store.db.exec('DELETE FROM schema_migrations WHERE version = 3');
+    store.close();
+  }
 
-  store.db.exec(`INSERT OR IGNORE INTO call_attempts (attempt_id, lead_id, run_id, phone_e164, dispatched_at)
-                 SELECT 'bf_' || c.call_id, c.lead_id, l.run_id, l.phone_e164, c.received_at
-                 FROM calls c JOIN leads l ON l.lead_id = c.lead_id`);
-  assert.equal(store.callCountForPhone(runId, '+919876543210'), 1, 'the completed call is counted after backfill');
-  store.close();
+  const reopened = new Store(path);
+  const runId = reopened.listRuns()[0]!.runId;
+  assert.equal(
+    reopened.callCountForPhone(runId, '+919876543210'),
+    1,
+    'the completed call is counted after the migration runs',
+  );
+  assert.deepEqual(reopened.db.prepare('PRAGMA foreign_key_check').all(), [], 'and no orphan was introduced');
+  reopened.close();
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('the daily ceiling is measured on the clock the call is placed on', () => {
@@ -181,5 +199,101 @@ test('the daily ceiling is measured on the clock the call is placed on', () => {
 
   // And the real-clock default does not see either of them.
   assert.equal(store.callsToday(), 0, 'a 2026-03 call is not in today rolling window');
+  store.close();
+});
+
+test('a lead the dialler cannot take is deferred, and stays callable', async () => {
+  // Two things the old assertions missed. The CircuitOpenError branch had no
+  // coverage at all - without it the error becomes a 500 on the lead webhook,
+  // asking Meta to redeliver a lead we already hold, and the person is never
+  // called. And asserting only on the returned status would pass even if the
+  // lead were marked suppressed and dropped out of the queue forever.
+  const g = { ...G, maxCallsPerDay: 99, maxCallAttemptsPerLead: 2 };
+  const { store, brief, runId } = await liveRun(g);
+  const intake = intakeLead(store, g, runId, {
+    name: 'Asha R',
+    phone: '9876543210',
+    consent: true,
+    consentSource: 'meta_instant_form',
+    adId: 'ad_1',
+  });
+  if (intake.status !== 'accepted') throw new Error('setup failed');
+
+  const down = {
+    kind: 'omnidimension' as const,
+    dispatchCall: () => Promise.reject(new CircuitOpenError('omnidimension', 30_000, 'provider unreachable')),
+  } as unknown as MockVoiceProvider;
+
+  const out = await dispatchLead(store, down, g, intake.lead, brief, 'http://x/hook');
+  assert.equal(out.status, 'deferred', 'not an error the webhook should 500 on');
+  assert.ok(
+    store.pendingLeads(runId).some((l) => l.leadId === intake.lead.leadId),
+    'and still in the queue - a deferred lead has to be callable later',
+  );
+  store.close();
+});
+
+test('a lead deferred by the daily ceiling stays in the queue', async () => {
+  // "the rest are deferred, not silently dropped" was asserted on the return
+  // value alone, which would pass with the lead marked suppressed.
+  const g = { ...G, maxCallsPerDay: 1, maxCallAttemptsPerLead: 9 };
+  const { store, brief, runId } = await liveRun(g);
+
+  const made: Lead[] = [];
+  for (let i = 0; i < 2; i += 1) {
+    const intake = intakeLead(store, g, runId, {
+      name: `Person ${i}`,
+      phone: `98765432${String(20 + i)}`,
+      consent: true,
+      consentSource: 'meta_instant_form',
+      adId: `ad_${i}`,
+    });
+    if (intake.status !== 'accepted') throw new Error('setup failed');
+    made.push(intake.lead);
+  }
+
+  const first = await dispatchLead(store, new MockVoiceProvider(3), g, made[0]!, brief, 'http://x/hook');
+  const second = await dispatchLead(store, new MockVoiceProvider(3), g, made[1]!, brief, 'http://x/hook');
+  assert.equal(first.status, 'dispatched');
+  assert.equal(second.status, 'deferred');
+
+  assert.ok(
+    store.pendingLeads(runId).some((l) => l.leadId === made[1]!.leadId),
+    'the deferred lead is still waiting, not written off',
+  );
+  store.close();
+});
+
+test('the ceiling is measured on the clock dispatchLead is given', async () => {
+  // The existing clock test drove the store directly. This drives the caller,
+  // which is where the two halves of the bug actually met: recordCallAttempt
+  // stamped the real clock while dispatchLead had been handed a simulated one.
+  const cap = 2;
+  const g = { ...G, maxCallsPerDay: cap, maxCallAttemptsPerLead: 9 };
+  const { store, brief, runId } = await liveRun(g);
+
+  const leadAt = async (index: number, at: Date) => {
+    const intake = intakeLead(store, g, runId, {
+      name: `Person ${index}`,
+      phone: `98765${String(10000 + index)}`,
+      consent: true,
+      consentSource: 'meta_instant_form',
+      adId: `ad_${index}`,
+    });
+    if (intake.status !== 'accepted') throw new Error('setup failed');
+    return dispatchLead(store, new MockVoiceProvider(3), g, intake.lead, brief, 'http://x/hook', {}, at);
+  };
+
+  const twoDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+  for (let i = 0; i < cap; i += 1) {
+    assert.equal((await leadAt(i, twoDaysAgo)).status, 'dispatched', 'the simulated day has its own allowance');
+  }
+  assert.equal((await leadAt(99, twoDaysAgo)).status, 'deferred', 'and the ceiling binds within it');
+
+  // A simulated day far enough away that the rolling window does not reach
+  // back into the first batch - two days apart would still overlap at the
+  // boundary, since the window is 24 hours wide.
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  assert.equal((await leadAt(200, yesterday)).status, 'dispatched');
   store.close();
 });

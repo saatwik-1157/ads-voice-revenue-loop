@@ -2,6 +2,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { CircuitBreaker, CircuitOpenError, breakerFor, allBreakers, resetAllBreakers } from '../src/core/breaker.ts';
 import { MetaApiProvider } from '../src/meta/api.ts';
+import { OmniDimensionProvider } from '../src/voice/omnidimension.ts';
 
 /**
  * The circuit breaker.
@@ -106,7 +107,7 @@ test('a failed probe re-opens it for another full cooldown', async () => {
   assert.equal(breaker.state(), 'open', 'and the wait starts over, not where it left off');
 });
 
-test('only one call probes a half-open circuit', async () => {
+test('only one call probes a half-open circuit', { timeout: 5000 }, async () => {
   // Without this, everything queued behind the outage arrives together the
   // moment the cooldown expires and re-opens the circuit as a group - the
   // thundering herd the breaker exists to prevent.
@@ -220,7 +221,7 @@ test('a bad request through the Meta client leaves the circuit shut', async () =
   for (let i = 0; i < 10; i += 1) {
     await assert.rejects(provider.accountSummary(), /400/);
   }
-  assert.equal(allBreakers().find((b) => b.provider === 'meta')?.state ?? 'closed', 'closed');
+  assert.equal(allBreakers().find((b) => b.provider === 'meta')?.state, 'closed');
 });
 
 test('a slow call finishing late cannot re-close a circuit that opened underneath it', async () => {
@@ -287,4 +288,71 @@ test('the open error reports the time actually left, not the whole cooldown', as
   const err = await breaker.run('op', () => Promise.resolve('x')).catch((e: unknown) => e);
   assert.ok(err instanceof CircuitOpenError);
   assert.equal(err.retryAfterMs, 10_000, 'a caller backing off on this must not wait three times too long');
+});
+
+test('the dialler is wired to its own breaker, not just Meta', async () => {
+  // The Meta equivalent of this test exists because the class could be perfect
+  // and connected to nothing. The voice side - which places the phone calls,
+  // and where an outage means leads go undialled - never had one.
+  resetAllBreakers();
+  let dispatches = 0;
+  const provider = new OmniDimensionProvider({
+    apiKey: 'sk-test',
+    agentId: 'agent_1',
+    baseUrl: 'https://api.example.test/v1',
+    retry: { attempts: 1, sleep: () => Promise.resolve(), onRetry: () => {} },
+    fetchImpl: () => {
+      dispatches += 1;
+      return Promise.reject(new Error('ECONNREFUSED'));
+    },
+  });
+
+  const lead = {
+    leadId: 'lead_1',
+    runId: 'run_1',
+    name: 'Asha R',
+    phoneE164: '+919876543210',
+    email: null,
+    consent: true,
+    consentSource: 'meta_instant_form',
+    campaignId: null,
+    adsetId: null,
+    adId: null,
+    creativeId: null,
+    createdAt: new Date().toISOString(),
+    callStatus: 'pending' as const,
+  };
+  const call = () =>
+    provider.dispatchCall({
+      lead,
+      brief: { offer: { outcome: 'x' }, callScript: {} } as never,
+      metadata: {},
+      webhookUrl: 'https://example.test/hook',
+      idempotencyKey: `call:${lead.leadId}`,
+    });
+
+  for (let i = 0; i < 5; i += 1) await assert.rejects(call());
+  const afterOpening = dispatches;
+  assert.equal(afterOpening, 5, 'five operations, one attempt each');
+
+  await assert.rejects(call(), CircuitOpenError);
+  assert.equal(dispatches, afterOpening, 'once open, the dialler is not called at all');
+  assert.equal(allBreakers().find((b) => b.provider === 'omnidimension')?.state, 'open');
+});
+
+test('a stale success cannot wipe a circuit that reopened after a reset', async () => {
+  // The failure-path twin of this is covered above; the success path was not.
+  const c = clock();
+  const breaker = new CircuitBreaker('meta', { failureThreshold: 1, cooldownMs: 10_000, now: c.now });
+
+  let finish: (() => void) | null = null;
+  const slow = breaker.run('slow', () => new Promise<string>((resolve) => { finish = () => resolve('late'); }));
+
+  breaker.reset();
+  await assert.rejects(breaker.run('op', () => Promise.reject(transient('down again'))));
+  assert.equal(breaker.state(), 'open');
+
+  finish!();
+  assert.equal(await slow, 'late');
+  assert.equal(breaker.state(), 'open', 'a success that predates the reset says nothing about now');
 });

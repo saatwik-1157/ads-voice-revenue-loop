@@ -10,7 +10,8 @@ import { MockVoiceProvider } from '../src/voice/mock.ts';
 import { RenderedAssetProvider } from '../src/creative/rendered.ts';
 import { iterateCreative, nextUntried } from '../src/creative/iterate.ts';
 import type { Context } from '../src/orchestrator.ts';
-import type { Brief } from '../src/core/types.ts';
+import { applyRecommendation } from '../src/apply.ts';
+import type { Brief, Recommendation } from '../src/core/types.ts';
 
 /**
  * The ITERATE arm.
@@ -175,4 +176,135 @@ test('an iteration is not activated on a campaign a human paused', async () => {
   const added = ctx.store.listAds(campaign.campaignId).find((a) => a.adId === outcome.adId);
   assert.equal(added?.status, 'PAUSED', 'iterating must not be what restarts a paused run');
   ctx.store.close();
+});
+
+test('a Meta failure mid-iteration leaves the stored brief intact', async () => {
+  // The worst defect this module has had: ensureCreativeAssets persists
+  // whatever brief it is handed, so handing it only the new variant erased
+  // every existing creative from the run. The next iteration then read those
+  // angles as untried and republished a creative the engine had just killed.
+  //
+  // Asserting on the return value cannot catch it. This asserts on what is on
+  // disk, both while the provider call is in flight and after it throws.
+  const { ctx, runId, brief } = await liveRun();
+  ctx.store.setAdStatus(ctx.store.listAds(ctx.store.getCampaign(runId)!.campaignId)[0]!.adId, 'PAUSED');
+  const before = ctx.store.getBrief(runId)!.creatives.map((c) => `${c.angle}/${c.hook}`);
+  assert.equal(before.length, 2, 'two creatives to lose');
+
+  let duringCall: string[] = [];
+  ctx.meta.createAdCreative = (): Promise<{ creativeId: string }> => {
+    // What a concurrent reader would see at this instant.
+    duringCall = ctx.store.getBrief(runId)!.creatives.map((c) => `${c.angle}/${c.hook}`);
+    return Promise.reject(Object.assign(new Error('meta 503'), { retryable: false }));
+  };
+
+  await assert.rejects(iterateCreative(ctx, runId, brief));
+
+  for (const original of before) {
+    assert.ok(duringCall.includes(original), `${original} must still be readable mid-call`);
+    assert.ok(
+      ctx.store.getBrief(runId)!.creatives.some((c) => `${c.angle}/${c.hook}` === original),
+      `${original} must survive a failed publish`,
+    );
+  }
+  ctx.store.close();
+});
+
+test('the new copy itself is claim-checked, not just the brief it came from', async () => {
+  // The previous version of this test poisoned brief.offer.deliverable, which
+  // checkClaims walks anyway - so it passed whether or not the new variant was
+  // examined. Banning a phrase that appears only in the drafted hook is what
+  // makes the difference observable.
+  const { ctx, runId, brief } = await liveRun();
+  ctx.store.setAdStatus(ctx.store.listAds(ctx.store.getCampaign(runId)!.campaignId)[0]!.adId, 'PAUSED');
+
+  const pick = nextUntried(brief);
+  assert.ok(pick, 'there is an untried angle to draft');
+  const guarded = {
+    ...ctx,
+    guardrails: { ...G, bannedClaimPatterns: [...G.bannedClaimPatterns, pick.hook.toLowerCase()] },
+  };
+
+  const outcome = await iterateCreative(guarded, runId, brief);
+  assert.equal(outcome.status, 'refused', 'the phrase is only in the copy this call drafted');
+  assert.match(outcome.reason, /needs a person/);
+  ctx.store.close();
+});
+
+test('a new angle is preferred over a new hook on an angle already losing', async () => {
+  // nextUntried's documented rule. The old assertion passed on the fallback
+  // path too, because the fallback happened to land on an unused angle.
+  const { brief } = await liveRun();
+  const usedAngles = new Set(brief.creatives.map((c) => c.angle));
+
+  // A brief that has used every angle once. The rule now has to choose a
+  // second hook, and any pair is fine - what matters is the case above it.
+  const everyAngle = {
+    ...brief,
+    creatives: ['Speed', 'Cost certainty', 'Risk of delay'].map((angle, i) => ({
+      ...brief.creatives[0]!,
+      creativeId: `cr_${i}`,
+      angle,
+      hook: `first hook for ${angle}`,
+    })),
+  };
+  assert.ok(nextUntried(everyAngle), 'still something to try');
+
+  // And with one angle untouched, that is the one it takes.
+  const pick = nextUntried(brief);
+  assert.ok(pick);
+  assert.equal(usedAngles.has(pick.angle), false);
+});
+
+/** A recommendation shaped like the engine's, for driving `apply` directly. */
+function recommendation(signal: string, perAd: Brief['creatives']): Recommendation {
+  const zero = {
+    spendMinor: 0, leads: 0, unattributedLeads: 0, calledLeads: 0, leadsAwaitingCall: 0,
+    connectedLeads: 0, qualifiedLeads: 0, appointments: 0, sales: 0, revenueMinor: 0,
+    cplMinor: null, costPerConnectedMinor: null, costPerQualifiedMinor: null, cacMinor: null,
+    roas: 0, connectRate: 0, qualifyRate: 0,
+  } as Recommendation['economics'];
+  return {
+    decision: 'ITERATE',
+    signal,
+    rationale: 'test',
+    action: 'test',
+    requiresHumanApproval: false,
+    economics: zero,
+    perAd: perAd.map((c) => ({ adId: `ad_${c.creativeId}`, decision: 'KEEP' as const, rationale: '', economics: zero })),
+  };
+}
+
+test('applying an ITERATE on a creative fault publishes a new ad', async () => {
+  // iterateCreative was only ever called directly by these tests. The branch in
+  // applyRecommendation that reaches it had no coverage at all, so the whole
+  // arm could be turned back into the no-op it started as.
+  const { ctx, runId, brief } = await liveRun();
+  const campaign = ctx.store.getCampaign(runId)!;
+  const adsBefore = ctx.store.listAds(campaign.campaignId).length;
+  ctx.store.setAdStatus(ctx.store.listAds(campaign.campaignId)[0]!.adId, 'PAUSED');
+
+  const outcome = await applyRecommendation(ctx, runId, brief, recommendation('poor_qualification', brief.creatives));
+
+  assert.equal(outcome.kind, 'iterated');
+  assert.equal(ctx.store.listAds(campaign.campaignId).length, adsBefore + 1);
+  ctx.store.close();
+});
+
+test('applying an ITERATE on a plumbing fault publishes nothing', async () => {
+  // The engine says so in its own words - "this is a pipeline fault, not a
+  // creative fault". Branching on the decision alone would spend more on a
+  // message that was never the problem.
+  for (const signal of ['no_delivery', 'no_leads', 'attribution_gap', 'low_connect_rate']) {
+    const { ctx, runId, brief } = await liveRun();
+    const campaign = ctx.store.getCampaign(runId)!;
+    const adsBefore = ctx.store.listAds(campaign.campaignId).length;
+    ctx.store.setAdStatus(ctx.store.listAds(campaign.campaignId)[0]!.adId, 'PAUSED');
+
+    const outcome = await applyRecommendation(ctx, runId, brief, recommendation(signal, brief.creatives));
+
+    assert.notEqual(outcome.kind, 'iterated', `${signal} is not a creative fault`);
+    assert.equal(ctx.store.listAds(campaign.campaignId).length, adsBefore, `${signal} published nothing`);
+    ctx.store.close();
+  }
 });

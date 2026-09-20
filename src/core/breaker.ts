@@ -229,13 +229,29 @@ export class CircuitBreaker {
  */
 const breakers = new Map<string, CircuitBreaker>();
 
+/**
+ * The breaker for one provider, created on first use.
+ *
+ * `options` are only read when the breaker does not exist yet - a second caller
+ * passing different thresholds gets the first caller's breaker, silently. That
+ * is fine for the two production call sites, which pass none and take the
+ * defaults, and it is a trap for anyone who assumes otherwise, so a mismatch is
+ * logged rather than swallowed.
+ */
 export function breakerFor(provider: string, options?: BreakerOptions): CircuitBreaker {
-  let existing = breakers.get(provider);
-  if (!existing) {
-    existing = new CircuitBreaker(provider, options);
-    breakers.set(provider, existing);
+  const existing = breakers.get(provider);
+  if (existing) {
+    if (options) {
+      log.warn('breaker.options_ignored', {
+        provider,
+        reason: 'a breaker for this provider already exists; the first caller decides its thresholds',
+      });
+    }
+    return existing;
   }
-  return existing;
+  const created = new CircuitBreaker(provider, options);
+  breakers.set(provider, created);
+  return created;
 }
 
 export function allBreakers(): BreakerStatus[] {

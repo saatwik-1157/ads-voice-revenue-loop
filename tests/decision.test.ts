@@ -367,13 +367,95 @@ test('an ad is not killed because attribution broke', async () => {
 test('with attribution intact, an ad with spend and no leads is still killed', async () => {
   // The caution above must not become a blanket excuse: when every lead that
   // arrived carried an ad id, an ad with none really did fail.
+  //
+  // This used to assert only `unattributedLeads === 0` and the run signal -
+  // both properties of the fixture it had just built - and `seed()` never
+  // publishes a campaign, so `rec.perAd` was empty and no kill could be
+  // observed at all. Returning 'KEEP' unconditionally from the zero-lead branch
+  // passed it, which is the exact defect it was named for.
   const { store, runId, brief } = await seed();
-  store.recordSpend({ runId, adId: 'ad_1', spendMinor: 120000, impressions: 9000, clicks: 90, leads: 20, asOf: now() });
-  for (let i = 0; i < 20; i += 1) addLead(store, runId, i, { connected: true, qualified: i < 12 });
+  const meta = new MockMetaProvider(9);
+  approve(store, requestGate1(store, G, runId, brief, 20000).approvalId, 'tester');
+  const { campaign } = await publishCampaign(store, meta, G, runId, brief, 'page_1', {
+    dailyBudgetMinor: 20000,
+    windowDays: 3,
+  });
+  const ads = store.listAds(campaign.campaignId);
+  const busy = ads[0]!.adId;
+  const dud = ads[1]!.adId;
+
+  // One ad earning its keep, one spending with nothing to show anywhere.
+  store.recordSpend({ runId, adId: busy, spendMinor: 120000, impressions: 9000, clicks: 90, leads: 20, asOf: now() });
+  store.recordSpend({ runId, adId: dud, spendMinor: 120000, impressions: 9000, clicks: 90, leads: 0, asOf: now() });
+  for (let i = 0; i < 20; i += 1) {
+    const intake = intakeLead(store, G, runId, {
+      name: `Lead ${i}`,
+      phone: `9${String(700000000 + i * 31)}`,
+      consent: true,
+      consentSource: 'meta_instant_form',
+      adId: busy,
+    });
+    if (intake.status !== 'accepted') throw new Error('setup failed');
+    handleCallWebhook(store, { call_id: `c_${i}`, lead_id: intake.lead.leadId, connected: true, qualified: i < 12 });
+  }
 
   const rec = evaluate(store, G, runId, brief);
   assert.equal(rec.economics.unattributedLeads, 0, 'every lead is traceable');
-  assert.notEqual(rec.signal, 'attribution_gap');
+  assert.equal(
+    rec.perAd.find((a) => a.adId === dud)?.decision,
+    'KILL',
+    'spend with no leads anywhere means an infinite best-case CPL, which is maximally killable',
+  );
+  store.close();
+});
+
+test('a stop-loss KILL reaches every ad, or none of them is paused', async () => {
+  // apply only pauses ads whose own decision is KILL, so if the run-level
+  // verdict stopped propagating, a run killed for loss would leave its ads
+  // running and spending.
+  const { store, runId, brief } = await seed();
+  const meta = new MockMetaProvider(11);
+  approve(store, requestGate1(store, G, runId, brief, 20000).approvalId, 'tester');
+  const { campaign } = await publishCampaign(store, meta, G, runId, brief, 'page_1', {
+    dailyBudgetMinor: 20000,
+    windowDays: 3,
+  });
+  const ads = store.listAds(campaign.campaignId);
+  for (const ad of ads) {
+    store.recordSpend({ runId, adId: ad.adId, spendMinor: G.stopLossMinor, impressions: 9000, clicks: 90, leads: 5, asOf: now() });
+  }
+
+  const rec = evaluate(store, G, runId, brief);
+  assert.equal(rec.decision, 'KILL');
+  assert.ok(rec.perAd.length > 0, 'there are ads to judge');
+  for (const ad of rec.perAd) {
+    assert.equal(ad.decision, 'KILL', `${ad.adId} must inherit the run verdict`);
+  }
+  store.close();
+});
+
+test('an ad below its fair share of the evidence budget is not judged yet', async () => {
+  // The gate that stops a creative being killed on almost no spend, and the
+  // divisor that decides what "fair share" means. Splitting by every creative
+  // ever written - which ITERATE appends to - made ads killable on a fraction
+  // of the intended evidence.
+  const { store, runId, brief } = await seed();
+  const meta = new MockMetaProvider(13);
+  approve(store, requestGate1(store, G, runId, brief, 20000).approvalId, 'tester');
+  const { campaign } = await publishCampaign(store, meta, G, runId, brief, 'page_1', {
+    dailyBudgetMinor: 20000,
+    windowDays: 3,
+  });
+  const ads = store.listAds(campaign.campaignId);
+  const fairShare = Math.round(G.minSpendBeforeKillMinor / ads.length);
+
+  // Just under its share, with nothing to show: not enough evidence to judge.
+  store.recordSpend({ runId, adId: ads[0]!.adId, spendMinor: fairShare - 100, impressions: 500, clicks: 5, leads: 0, asOf: now() });
+  assert.equal(evaluate(store, G, runId, brief).perAd.find((a) => a.adId === ads[0]!.adId)?.decision, 'KEEP');
+
+  // Over it, and the same nothing is now a verdict.
+  store.recordSpend({ runId, adId: ads[0]!.adId, spendMinor: fairShare + 100, impressions: 900, clicks: 9, leads: 0, asOf: now() });
+  assert.equal(evaluate(store, G, runId, brief).perAd.find((a) => a.adId === ads[0]!.adId)?.decision, 'KILL');
   store.close();
 });
 

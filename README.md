@@ -57,7 +57,7 @@ and `.ts` files execute without one. Earlier versions need `--experimental-sqlit
 npm install
 node src/cli.ts demo          # the whole loop, mocked, ~2.5 seconds
 npm run lint                  # eslint, type-aware
-npm test                      # 291 tests: guardrails, the loop, retries, scheduling, creative, access, logging, hostile input
+npm test                      # guardrails, the loop, retries, scheduling, creative, access, logging, hostile input
 ```
 
 ### Credentials
@@ -671,7 +671,7 @@ config/        guardrails.json - the control layer you edit
 docs/          the two external account guides, plus DEPLOY, PROJECT_AUDIT,
                BASELINE and FINAL_STATUS
 scripts/       generate-placeholder-assets.ts, for filling an empty assets/
-tests/         291 tests, run by `npm test` and on every push
+tests/         one file per area; run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 data/          runtime state - database, previews, mock ad account. Gitignored,
                created on demand, and `reset --yes` throws it away

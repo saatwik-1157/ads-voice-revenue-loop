@@ -180,7 +180,8 @@ invent — it is the third of three, not the only one.
 ```
 npm run typecheck     clean
 npm run lint          clean
-npm test              291 tests, 290 passed, 1 skipped on Windows  (was 224 at baseline)
+npm test              all passing, 1 skipped on Windows  (224 tests at the baseline; the suite
+                      has roughly tripled since, so `npm test` is the honest source for a count)
 node src/cli.ts demo  green, working tree clean afterwards
 npm audit --omit=dev  0 vulnerabilities
 ```
@@ -218,7 +219,7 @@ something, rather than the tests asserting it in isolation.
 npm ci                      # install
 npm run typecheck           # tsc --noEmit
 npm run lint                # eslint
-npm test                    # 291 tests
+npm test                    # the whole suite
 npm run ci                  # all three
 node src/cli.ts demo        # end-to-end against mocks
 node src/cli.ts safety      # safety status + emergency stop state

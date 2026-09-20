@@ -2,7 +2,7 @@ import type { Context } from '../orchestrator.ts';
 import type { Brief, CreativeVariant } from '../core/types.ts';
 import { checkClaims, checkPromiseAlignment } from '../brief/claims.ts';
 import { ensureCreativeAssets } from './pipeline.ts';
-import { id, now } from '../core/util.ts';
+import { fingerprint, now } from '../core/util.ts';
 import { log } from '../core/log.ts';
 
 /**
@@ -65,10 +65,19 @@ export function nextUntried(brief: Brief): { angle: string; hook: string } | nul
 }
 
 /** Build a variant in the same shape and voice as the brief's own. */
-function draft(brief: Brief, pick: { angle: string; hook: string }, geos: string[]): CreativeVariant {
+function draft(
+  runId: string,
+  brief: Brief,
+  pick: { angle: string; hook: string },
+  geos: string[],
+): CreativeVariant {
   const model = brief.creatives[0];
   return {
-    creativeId: id('cr'),
+    // Derived from what it is, not minted fresh. A random id per call made both
+    // idempotency keys useless: a retried cycle never matched the stored key or
+    // Meta's, so every failed attempt left another orphan creative in the ad
+    // account and the work was redone from scratch.
+    creativeId: `cr_${fingerprint([runId, pick.angle, pick.hook]).slice(0, 16)}`,
     angle: pick.angle,
     hook: pick.hook,
     primaryText: `${pick.hook} We handle ${brief.niche.name.toLowerCase()} for businesses in ${geos.join('/')}. Tell us what is happening and we will call you back with a fixed scope and a price - usually within 10 minutes during working hours.`,
@@ -113,7 +122,7 @@ export async function iterateCreative(ctx: Context, runId: string, brief: Brief)
     };
   }
 
-  const variant = draft(brief, pick, g.allowedGeos);
+  const variant = draft(runId, brief, pick, g.allowedGeos);
   const candidate: Brief = { ...brief, creatives: [...brief.creatives, variant] };
 
   // The same check the brief went through at gate #1. Iteration is allowed
@@ -131,11 +140,29 @@ export async function iterateCreative(ctx: Context, runId: string, brief: Brief)
   }
 
   // Artwork, through the same pipeline and the same provenance labelling.
-  const withAssets: Brief = { ...brief, creatives: [variant] };
-  await ensureCreativeAssets(ctx.store, ctx.meta, ctx.assets, runId, withAssets);
-  const ready = withAssets.creatives[0]!;
+  //
+  // The FULL brief with the new variant appended, never just the variant.
+  // ensureCreativeAssets persists whatever brief it is handed, so passing
+  // `{ creatives: [variant] }` wrote a brief containing only the unpublished
+  // creative - erasing every existing one from the run. The next iteration then
+  // saw those angles as untried and republished a creative the engine had just
+  // killed, live, with real money behind it.
+  const working: Brief = { ...brief, creatives: [...brief.creatives, variant] };
+  await ensureCreativeAssets(ctx.store, ctx.meta, ctx.assets, runId, working, {
+    // Previews are written for every other call site; without this nobody can
+    // look at machine-rendered artwork that went live.
+    previewDir: ctx.env.previewDir,
+  });
+  const ready = working.creatives[working.creatives.length - 1]!;
   if (!ready.assetRef) {
     return { status: 'refused', reason: `no artwork could be produced for ${variant.creativeId}` };
+  }
+
+  // Re-read, not only checked at the top. Artwork can take several
+  // seconds and a stop engaged in that window would otherwise still see a new
+  // ad go live.
+  if (ctx.store.emergencyStop().engaged) {
+    return { status: 'refused', reason: 'the emergency stop was engaged while the artwork was being produced' };
   }
 
   const { creativeId } = await ctx.store.onceAsync('meta.createCreative', [runId, variant.creativeId], () =>
@@ -157,20 +184,26 @@ export async function iterateCreative(ctx: Context, runId: string, brief: Brief)
     }),
   );
 
+  // Recorded PAUSED first, then activated, then updated. The other order left
+  // an ad ACTIVE at Meta and unknown to the store if the process died between
+  // the two - invisible to the decision engine, never paused by a KILL, and
+  // uncounted by the variant cap, which reads this table.
+  ctx.store.saveAd({
+    adId,
+    campaignId: campaign.campaignId,
+    adsetId: campaign.adsetId,
+    creativeId: variant.creativeId,
+    status: 'PAUSED',
+    createdAt: now(),
+  });
+
   // Live only if the campaign it is joining is live. An iteration must not be
   // the thing that starts spending on a run somebody paused.
   const activate = campaign.status === 'ACTIVE';
   if (activate) await ctx.meta.setStatus(adId, 'ACTIVE');
 
   ctx.store.transaction(() => {
-    ctx.store.saveAd({
-      adId,
-      campaignId: campaign.campaignId,
-      adsetId: campaign.adsetId,
-      creativeId: variant.creativeId,
-      status: activate ? 'ACTIVE' : 'PAUSED',
-      createdAt: now(),
-    });
+    if (activate) ctx.store.setAdStatus(adId, 'ACTIVE');
     // The brief carries the new variant, so the next iteration knows this angle
     // is spent and a call outcome can be attributed back to it.
     ctx.store.saveBrief(runId, { ...brief, creatives: [...brief.creatives, ready] });

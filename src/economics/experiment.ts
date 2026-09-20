@@ -141,7 +141,13 @@ export function analyseExperiment(
   const leader = comparable[0]!;
   const runnerUp = comparable[1]!;
 
-  if (leader.low > runnerUp.high) {
+  // Against the WHOLE field, not just whichever sorted second. Comparing only
+  // to comparable[1] let the tiebreaker pick the tightest interval among equal
+  // rates - the easiest opponent - so a winner could be declared while a third
+  // variant still overlapped the leader. "The ranges do not overlap" is a claim
+  // about the set, and this is what makes it one.
+  const highestOther = Math.max(...comparable.slice(1).map((v) => v.high));
+  if (leader.low > highestOther) {
     return {
       variants,
       metric,

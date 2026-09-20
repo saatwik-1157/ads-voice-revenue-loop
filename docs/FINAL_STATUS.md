@@ -2,8 +2,8 @@
 
 Tiers 1 and 2 of the implementation order in [`PROJECT_AUDIT.md`](PROJECT_AUDIT.md). Phases 0 and 1
 (audit and baseline) are complete; Tier 3 is not started. Of Tier 4, only the container image and the deployment path shipped - see
-[`DEPLOY.md`](DEPLOY.md); the dashboard, the HTTP API behind it, the experiments engine and
-multi-tenancy are not started.
+[`DEPLOY.md`](DEPLOY.md); the experiments engine shipped too ([`src/economics/experiment.ts`](../src/economics/experiment.ts));
+the dashboard, the HTTP API behind it and multi-tenancy are not started.
 
 Everything below was measured, not asserted. Commands and their output are at the end.
 
@@ -28,7 +28,8 @@ Everything below was measured, not asserted. Commands and their output are at th
 `PRAGMA foreign_keys = ON` had been set since the first release while **no table declared a single
 `REFERENCES` clause** — the grep count was zero. The pragma implied an integrity that did not exist.
 
-- Ten foreign keys on the genuine parent-child relationships.
+- Ten foreign keys on the genuine parent-child relationships. (Migration 3 later added two more
+  with `call_attempts`; the counts here describe this change set, not the schema today.)
 - **Deliberately unconstrained:** `leads.ad_id`, `leads.campaign_id`, `spend.ad_id`. These hold
   Meta's identifiers, and a lead arriving with no ad id is a normal case the system already handles
   (the `attribution_gap` signal). A constraint there would refuse real traffic.
@@ -164,11 +165,11 @@ invent — it is the third of three, not the only one.
 | `src/scheduler.ts` | Cycle skips while stopped; every decision logged |
 | `src/cli/commands/tools.ts` | `safety` command |
 | `src/cli/commands/automation.ts` | Fast loop in `serve`, cleanup on shutdown, per-route token warnings |
-| `tests/migrations.test.ts` | **new** — 6 tests |
-| `tests/webhook-events.test.ts` | **new** — 5 tests |
-| `tests/safety.test.ts` | **new** — 8 tests |
-| `tests/access.test.ts` | **new** — 11 tests |
-| `tests/logging.test.ts` | **new** — 11 tests |
+| `tests/migrations.test.ts` | **new** |
+| `tests/webhook-events.test.ts` | **new** |
+| `tests/safety.test.ts` | **new** |
+| `tests/access.test.ts` | **new** |
+| `tests/logging.test.ts` | **new** |
 | `tests/holdout.test.ts`, `tests/cli.test.ts`, `tests/idempotency.test.ts`, `tests/http-hostile.test.ts` | Fixtures and expectations corrected for the new constraints |
 | `.env.example` | `FL_VIEWER_TOKEN`, `FL_LOG_FORMAT`, `FL_LOG_LEVEL`; the old text still described open read routes |
 | `docs/PROJECT_AUDIT.md`, `docs/BASELINE.md` | **new** |
@@ -180,8 +181,8 @@ invent — it is the third of three, not the only one.
 ```
 npm run typecheck     clean
 npm run lint          clean
-npm test              all passing, 1 skipped on Windows  (224 tests at the baseline; the suite
-                      has roughly tripled since, so `npm test` is the honest source for a count)
+npm test              all passing, 1 skipped on Windows  (224 tests at the baseline; `npm test` is the
+                      honest source for a count, and this line will not be kept up to date)
 node src/cli.ts demo  green, working tree clean afterwards
 npm audit --omit=dev  0 vulnerabilities
 ```
@@ -261,7 +262,6 @@ number> --yes`, then a paused publish inspected in Ads Manager before activation
 - **The logging deny-list cannot be complete.** It catches the field names in use today. A new field
   called something the pattern does not match would be logged, which is why `redact()` runs on every
   value as well and why nothing passes a raw request body to the logger.
-- **No circuit breaker** (R2). A provider that is failing is retried on every cycle. Tier 3.
 - **Still SQLite only** (D5). The repository abstraction and PostgreSQL are Tier 3.
 - **No dashboard and no HTTP API for one** (Tier 4). Everything is still CLI plus webhooks.
 

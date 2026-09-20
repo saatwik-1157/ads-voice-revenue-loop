@@ -222,3 +222,69 @@ test('a bad request through the Meta client leaves the circuit shut', async () =
   }
   assert.equal(allBreakers().find((b) => b.provider === 'meta')?.state ?? 'closed', 'closed');
 });
+
+test('a slow call finishing late cannot re-close a circuit that opened underneath it', async () => {
+  // The worst of the breaker's concurrency bugs. `state` is captured on the way
+  // in and success used to reset everything, so one long read that started
+  // while the circuit was closed wiped an open circuit and released the whole
+  // queued herd at a provider still down - the exact thing the class exists to
+  // prevent.
+  const c = clock();
+  const breaker = new CircuitBreaker('meta', { failureThreshold: 2, cooldownMs: 30_000, now: c.now });
+
+  let finishSlow: (() => void) | null = null;
+  const slow = breaker.run('slow read', () => new Promise<string>((resolve) => { finishSlow = () => resolve('late'); }));
+
+  // While it is in flight, other calls fail and open the circuit.
+  for (let i = 0; i < 2; i += 1) await assert.rejects(breaker.run('op', () => Promise.reject(transient())));
+  assert.equal(breaker.state(), 'open');
+
+  finishSlow!();
+  assert.equal(await slow, 'late');
+  assert.equal(breaker.state(), 'open', 'the late success says nothing about the outage');
+});
+
+test('a probe in flight cannot undo an operator reset', async () => {
+  const c = clock();
+  const breaker = new CircuitBreaker('meta', { failureThreshold: 1, cooldownMs: 10_000, now: c.now });
+  await assert.rejects(breaker.run('op', () => Promise.reject(transient())));
+  c.advance(11_000);
+
+  let failProbe: ((e: Error) => void) | null = null;
+  const probe = breaker.run('probe', () => new Promise<string>((_, reject) => { failProbe = reject; }));
+
+  // The operator has fixed the provider and cleared the circuit by hand.
+  breaker.reset();
+  assert.equal(breaker.state(), 'closed');
+
+  failProbe!(transient('stale failure'));
+  await assert.rejects(probe);
+  assert.equal(breaker.state(), 'closed', 'their decision wins over a call that predates it');
+});
+
+test('a probe that never settles does not wedge the circuit forever', async () => {
+  // Neither provider passes a timeout to fetch, so a hung socket held the probe
+  // flag set and refused every caller long after the cooldown expired.
+  const c = clock();
+  const breaker = new CircuitBreaker('voice', { failureThreshold: 1, cooldownMs: 10_000, now: c.now });
+  await assert.rejects(breaker.run('op', () => Promise.reject(transient())));
+  c.advance(11_000);
+
+  void breaker.run('hung probe', () => new Promise<string>(() => {})).catch(() => {});
+  await assert.rejects(breaker.run('op', () => Promise.resolve('x')), CircuitOpenError);
+
+  // A probe older than the cooldown is treated as lost.
+  c.advance(11_000);
+  assert.equal(await breaker.run('op', () => Promise.resolve('through')), 'through');
+});
+
+test('the open error reports the time actually left, not the whole cooldown', async () => {
+  const c = clock();
+  const breaker = new CircuitBreaker('meta', { failureThreshold: 1, cooldownMs: 30_000, now: c.now });
+  await assert.rejects(breaker.run('op', () => Promise.reject(transient())));
+
+  c.advance(20_000);
+  const err = await breaker.run('op', () => Promise.resolve('x')).catch((e: unknown) => e);
+  assert.ok(err instanceof CircuitOpenError);
+  assert.equal(err.retryAfterMs, 10_000, 'a caller backing off on this must not wait three times too long');
+});

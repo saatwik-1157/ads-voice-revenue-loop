@@ -355,7 +355,7 @@ What a cycle may do on its own: pull insights, evaluate, pause creatives the eng
 step budget up inside the approved band. What it may not do: widen a guardrail, resume a run a human
 paused, or approve its own gate #2.
 
-Four things make it safe to leave running:
+Five things make it safe to leave running:
 
 - **Budget steps are rate-limited, not just size-limited.** `maxBudgetStepFactor` caps one decision.
   Left at that, a 6-hourly loop would compound 1.3× four times a day — **2.86×** — while every
@@ -379,8 +379,9 @@ Four things make it safe to leave running:
   seconds exactly one call goes through to find out whether it is back — one, because letting
   everything queued behind the outage through at once is how a recovering provider gets knocked over
   again. **A 4xx never opens it:** that is a bug in our request, and counting it would turn one bad
-  call of ours into an outage for everything else. An open circuit shows up in `readiness`, and a
-  lead that cannot be dialled is deferred rather than dropped.
+  call of ours into an outage for everything else. An open circuit shows up on `GET /health/ready` of the running server - not in the
+  `readiness` command, which is a separate process with its own empty map - and a lead that cannot
+  be dialled is deferred rather than dropped.
 - **Failures are recorded, not thrown.** A provider outage ends that cycle with `error` in the
   `cycles` table and an audit event; the loop keeps its schedule. There is no catch-up burst either —
   if the process was down for a day, the right move is one cycle now, not twenty-four against stale

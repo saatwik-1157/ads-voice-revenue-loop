@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { identify, permits, refusalFor, type Role } from './access.ts';
 import { RateLimiter, RATE_LIMITS } from './ratelimit.ts';
 import { log } from '../core/log.ts';
+import { allBreakers } from '../core/breaker.ts';
 import { id } from '../core/util.ts';
 import type { Context } from '../orchestrator.ts';
 import { voiceWebhookUrl } from '../orchestrator.ts';
@@ -220,12 +221,25 @@ async function handle(
     // is the first thing anyone looking at this page needs to know.
     const stop = ctx.store.emergencyStop();
 
+    // Circuit breakers live in this process's memory, so this endpoint is the
+    // only place they can honestly be reported. The `readiness` command runs as
+    // a separate short-lived process and always sees an empty map.
+    //
+    // Reported, never a reason to fail readiness: a provider being down is not
+    // this process being unhealthy, and draining it would stop the webhooks
+    // that carry revenue and opt-outs.
+    const circuits = allBreakers().filter((b) => b.state !== 'closed');
+
     const ready = Object.values(checks).every((c) => c.ok);
     json(res, ready ? 200 : 503, {
       ready,
       mode: ctx.env.mode,
-      providers: { meta: ctx.meta.kind, voice: ctx.voice.kind },
       autopilot: stop.engaged ? { state: 'paused', trigger: stop.trigger, reason: stop.reason } : { state: 'active' },
+      providers: {
+        meta: ctx.meta.kind,
+        voice: ctx.voice.kind,
+        circuits: circuits.map((b) => ({ provider: b.provider, state: b.state, failures: b.consecutiveFailures })),
+      },
       checks,
     });
     return;

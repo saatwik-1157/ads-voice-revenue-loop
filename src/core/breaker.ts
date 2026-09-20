@@ -73,8 +73,18 @@ export class CircuitBreaker {
   #failures = 0;
   #openedAt: number | null = null;
   #lastError: string | null = null;
-  /** True while a half-open probe is in flight, so only one call probes. */
-  #probing = false;
+  /** When the half-open probe started, or null if none is in flight. */
+  #probeStartedAt: number | null = null;
+  /**
+   * Bumped whenever the circuit is deliberately reset.
+   *
+   * A call captures this on the way in and its outcome is ignored if it has
+   * changed by the time the call returns. Without it, a slow call that started
+   * while the circuit was closed re-closed a circuit that opened underneath it,
+   * releasing the whole queued herd at a provider still down - and a probe
+   * already in flight re-opened a circuit an operator had just cleared by hand.
+   */
+  #generation = 0;
 
   constructor(provider: string, options: BreakerOptions = {}) {
     this.provider = provider;
@@ -86,6 +96,23 @@ export class CircuitBreaker {
   state(): BreakerState {
     if (this.#openedAt === null) return 'closed';
     return this.#now() - this.#openedAt >= this.#cooldownMs ? 'half-open' : 'open';
+  }
+
+  /**
+   * Is a probe in flight, and still worth waiting for?
+   *
+   * A probe that never settles used to hold the circuit shut against everyone
+   * indefinitely: neither provider passes a timeout to fetch, so a hung socket
+   * kept the flag set until undici gave up minutes later. A probe older than
+   * the cooldown is treated as lost and another is allowed.
+   */
+  #probeInFlight(): boolean {
+    if (this.#probeStartedAt === null) return false;
+    if (this.#now() - this.#probeStartedAt >= this.#cooldownMs) {
+      this.#probeStartedAt = null;
+      return false;
+    }
+    return true;
   }
 
   status(): BreakerStatus {
@@ -103,7 +130,8 @@ export class CircuitBreaker {
     this.#failures = 0;
     this.#openedAt = null;
     this.#lastError = null;
-    this.#probing = false;
+    this.#probeStartedAt = null;
+    this.#generation += 1;
   }
 
   /**
@@ -114,44 +142,65 @@ export class CircuitBreaker {
    * the attempt level a single flaky call would push the circuit most of the
    * way open on its own.
    */
+  /** How long is left before the circuit would let a probe through. */
+  #remainingMs(): number {
+    if (this.#openedAt === null) return 0;
+    return Math.max(0, this.#cooldownMs - (this.#now() - this.#openedAt));
+  }
+
   async run<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     const state = this.state();
+    const generation = this.#generation;
 
     if (state === 'open') {
-      const left = this.#cooldownMs - (this.#now() - (this.#openedAt ?? 0));
-      throw new CircuitOpenError(this.provider, Math.max(0, left), this.#lastError ?? 'unknown');
+      throw new CircuitOpenError(this.provider, this.#remainingMs(), this.#lastError ?? 'unknown');
     }
 
+    let probing = false;
     if (state === 'half-open') {
       // Exactly one probe. Without this, everything queued behind the outage
       // arrives at once the moment the cooldown expires and re-opens the
       // circuit together - the thundering herd the breaker exists to prevent.
-      if (this.#probing) {
+      if (this.#probeInFlight()) {
         throw new CircuitOpenError(this.provider, this.#cooldownMs, this.#lastError ?? 'unknown');
       }
-      this.#probing = true;
+      this.#probeStartedAt = this.#now();
+      probing = true;
     }
 
     try {
       const result = await fn();
-      if (state === 'half-open') {
-        log.info('breaker.closed', { provider: this.provider, operation });
+      if (probing) this.#probeStartedAt = null;
+
+      // Someone reset the circuit while this was in flight; their decision wins.
+      if (generation !== this.#generation) return result;
+
+      this.#failures = 0;
+      this.#lastError = null;
+      // Only the probe may close an open circuit. A call that started while the
+      // circuit was closed says nothing about a circuit that opened underneath
+      // it, and letting it clear the state released the queue at a provider
+      // that was still down.
+      if (probing || this.#openedAt === null) {
+        if (this.#openedAt !== null) log.info('breaker.closed', { provider: this.provider, operation });
+        this.#openedAt = null;
       }
-      this.reset();
       return result;
     } catch (err) {
-      this.#probing = false;
+      if (probing) this.#probeStartedAt = null;
+
       const transient = (err as { retryable?: boolean }).retryable === true;
       if (!transient) {
         // Our bug, not their outage. Left alone deliberately: counting these
         // would let one malformed request open the circuit for everybody.
         throw err;
       }
+      if (generation !== this.#generation) throw err;
 
       this.#failures += 1;
       this.#lastError = (err as Error).message.slice(0, 200);
 
-      if (state === 'half-open') {
+      if (probing) {
         // The probe failed: still down, wait another cooldown.
         this.#openedAt = this.#now();
         log.warn('breaker.still_open', { provider: this.provider, operation, error: this.#lastError });

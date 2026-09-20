@@ -202,6 +202,12 @@ export function assessReadiness(ctx: Context): ReadinessReport {
   // A provider this system has stopped calling. Not a blocker on its own - the
   // circuit closes itself when the provider recovers - but it is the first
   // thing worth knowing when nothing seems to be happening.
+  //
+  // Only ever populated when this runs inside a process that has been making
+  // provider calls, which the `readiness` command is not: breakers are
+  // in-memory and that command is a fresh short-lived process, so it always
+  // sees none. GET /health/ready on a running server is where an open circuit
+  // actually shows up. Kept here because the same function backs both.
   for (const b of allBreakers().filter((x) => x.state !== 'closed')) {
     add({
       gate: 'live',

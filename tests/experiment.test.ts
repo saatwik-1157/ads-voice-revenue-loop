@@ -153,3 +153,17 @@ test('the leader is the best rate, not the most leads', () => {
   ]);
   assert.equal(report.variants[0]?.adId, 'ad_good');
 });
+
+test('a winner must beat the whole field, not just whichever sorted second', () => {
+  // The sort tiebreaks equal rates by trial count, which picked the tightest
+  // interval - the easiest opponent. A winner could be declared while a third
+  // variant still overlapped the leader, and "the ranges do not overlap" is a
+  // claim about the set.
+  const report = run([
+    variant('ad_b', { calledLeads: 10, sales: 3 }),
+    variant('ad_c', { calledLeads: 35, sales: 0 }),
+    variant('ad_a', { calledLeads: 10, sales: 0 }),
+  ]);
+
+  assert.equal(report.verdict.kind, 'inconclusive', '3/10 overlaps 0/10 and cannot be a winner');
+});

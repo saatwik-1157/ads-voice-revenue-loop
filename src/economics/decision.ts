@@ -37,11 +37,18 @@ export function evaluate(store: Store, g: Guardrails, runId: string, brief: Brie
   // turned out to be its. If even that is over the threshold, attribution loss
   // cannot be the explanation and the ad can be killed on its own merits.
   const unattributed = economics.unattributedLeads;
+  // How many ads are splitting the spend. Non-paused when the campaign is
+  // running; every ad when none is, which is the state before activation and
+  // after a full kill - there the whole set still shared whatever was spent,
+  // and demanding the entire evidence budget from each would mean no ad could
+  // ever be judged.
+  const activeAds = ads.filter((a) => a.status !== 'PAUSED').length;
+  const runningAds = Math.max(1, activeAds || ads.length);
 
   const signal = diagnose(economics, g, brief);
   const perAdDecisions = perAd.map((entry) => ({
     adId: entry.adId,
-    decision: judgeAd(entry.economics, g, brief, signal.decision, unattributed),
+    decision: judgeAd(entry.economics, g, brief, signal.decision, unattributed, runningAds),
     rationale:
       unattributed === 0
         ? adRationale(entry.economics, g, brief)
@@ -230,9 +237,21 @@ function diagnose(e: Economics, g: Guardrails, brief: Brief): Diagnosis {
  * `unattributedLeads` is the run's count, not this ad's - by definition an
  * untraced lead belongs to no ad, and any of them could be this one's.
  */
-function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decision, unattributed: number): Decision {
+function judgeAd(
+  e: Economics,
+  g: Guardrails,
+  brief: Brief,
+  runDecision: Decision,
+  unattributed: number,
+  runningAds: number,
+): Decision {
   if (runDecision === 'KILL') return 'KILL';
-  const minSpend = Math.round(g.minSpendBeforeKillMinor / Math.max(1, brief.creatives.length));
+  // A fair share of the evidence budget, split across the ads actually running.
+  // This divided by `brief.creatives.length`, which counts every creative ever
+  // written including paused ones - and ITERATE appends to it every cycle. The
+  // threshold fell as the run went on, so ads became killable on a third of the
+  // intended evidence while only two were ever live.
+  const minSpend = Math.round(g.minSpendBeforeKillMinor / Math.max(1, runningAds));
   if (e.spendMinor < minSpend) return 'KEEP';
   if (e.sales > 0 && e.roas !== null && e.roas >= brief.successMetrics.targetRoas) return 'SCALE';
   // "No leads" is only evidence against a creative when leads that did arrive
@@ -245,14 +264,16 @@ function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decisio
   // than this, so a kill decided here cannot be a tracking fault.
   const killAboveMinor = brief.successMetrics.targetCplMinor * 2;
   const bestCaseLeads = e.leads + unattributed;
-  const bestCaseCplMinor = bestCaseLeads > 0 ? Math.round(e.spendMinor / bestCaseLeads) : null;
 
-  if (e.leads === 0) {
-    // No leads it can call its own. Still only a kill if it would be expensive
-    // even holding every untraced lead on the run.
-    return bestCaseCplMinor !== null && bestCaseCplMinor > killAboveMinor ? 'KILL' : 'KEEP';
-  }
-  if (bestCaseCplMinor !== null && bestCaseCplMinor > killAboveMinor) return 'KILL';
+  // Spend with nothing to show for it anywhere on the run. Its best possible
+  // cost per lead is infinite, which is the most killable an ad can be - and
+  // treating that as "unknown, so keep" meant the cleaner the attribution, the
+  // less the engine acted: one untraced lead anywhere flipped this to KILL,
+  // while a perfectly instrumented run let the same ad burn forever.
+  if (bestCaseLeads === 0) return e.spendMinor > 0 ? 'KILL' : 'KEEP';
+
+  const bestCaseCplMinor = Math.round(e.spendMinor / bestCaseLeads);
+  if (bestCaseCplMinor > killAboveMinor) return 'KILL';
   if (e.qualifiedLeads === 0 && e.connectedLeads >= 5) return 'ITERATE';
   return 'KEEP';
 }

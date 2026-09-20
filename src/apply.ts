@@ -50,6 +50,18 @@ export type ApplyOutcome =
       pausedAds: number;
     };
 
+/**
+ * ITERATE verdicts that are not about the creative.
+ *
+ * The engine already says so in its own words - "this is a pipeline fault, not
+ * a creative fault", "do not regenerate creative" - and branching on the
+ * decision alone ignored that. A campaign delivering nothing, or one whose
+ * leads arrive with no ad id, would have had a fresh ad published into it:
+ * spending more on a message that was never the problem, and adding a second
+ * broken thing to diagnose.
+ */
+const PLUMBING_SIGNALS = new Set(['no_delivery', 'no_leads', 'attribution_gap', 'low_connect_rate']);
+
 export async function applyRecommendation(
   ctx: Context,
   runId: string,
@@ -91,7 +103,7 @@ export async function applyRecommendation(
   // say the offer is not landing, write a different angle - and then hold
   // everything exactly as it was, reaching the same conclusion on every cycle
   // after that. Killing the losing creative frees the slot this then fills.
-  if (rec.decision === 'ITERATE') {
+  if (rec.decision === 'ITERATE' && !PLUMBING_SIGNALS.has(rec.signal)) {
     const iteration = await iterateCreative(ctx, runId, brief);
     if (iteration.status !== 'not_applicable') {
       return { kind: 'iterated', reason: iteration.reason, iteration, plan, pausedAds };

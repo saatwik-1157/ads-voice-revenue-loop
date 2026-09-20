@@ -1,4 +1,5 @@
 import type { Brief, Economics, Recommendation } from './core/types.ts';
+import { formatExperiment } from './economics/experiment.ts';
 import type { Guardrails } from './config/guardrails.ts';
 import { money, pct } from './core/util.ts';
 
@@ -62,6 +63,11 @@ export function formatRecommendation(rec: Recommendation, g: Guardrails): string
   lines.push('');
   lines.push('RUN ECONOMICS');
   lines.push(formatEconomics(rec.economics, g));
+  if (rec.experiment) {
+    lines.push('');
+    lines.push('IS THE DIFFERENCE REAL');
+    lines.push(formatExperiment(rec.experiment));
+  }
   if (rec.perAd.length) {
     lines.push('');
     lines.push('PER CREATIVE');

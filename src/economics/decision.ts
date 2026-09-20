@@ -3,6 +3,7 @@ import type { Brief, Decision, Economics, Recommendation } from '../core/types.t
 import type { Guardrails } from '../config/guardrails.ts';
 import { money, pct } from '../core/util.ts';
 import { economicsForAd, economicsForRun } from './metrics.ts';
+import { analyseExperiment } from './experiment.ts';
 import { budgetChangeNeedsApproval } from '../approvals/gates.ts';
 
 /**
@@ -48,11 +49,16 @@ export function evaluate(store: Store, g: Guardrails, runId: string, brief: Brie
     economics: entry.economics,
   }));
 
+  // Is the gap between these creatives real? Nothing asked before, and the
+  // system acts on the answer every time it puts budget behind a winner.
+  const experiment = perAd.length >= 2 ? analyseExperiment(perAd) : undefined;
+
   return {
     decision: signal.decision,
     signal: signal.signal,
     rationale: signal.rationale,
     action: signal.action,
+    experiment,
     requiresHumanApproval: signal.requiresHumanApproval,
     economics,
     perAd: perAdDecisions,

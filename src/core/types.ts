@@ -182,6 +182,8 @@ export interface Economics {
   qualifyRate: number | null;
 }
 
+import type { ExperimentReport } from '../economics/experiment.ts';
+
 export interface Recommendation {
   decision: Decision;
   signal: string;
@@ -190,6 +192,11 @@ export interface Recommendation {
   requiresHumanApproval: boolean;
   economics: Economics;
   perAd: Array<{ adId: string; decision: Decision; rationale: string; economics: Economics }>;
+  /**
+   * Whether the gap between creatives is real or noise. Absent when a run has
+   * fewer than two creatives to compare.
+   */
+  experiment?: ExperimentReport;
 }
 
 export interface AuditEvent {

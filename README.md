@@ -36,6 +36,7 @@ a sale can be attributed to the exact hook that paid for it.
 | E2. Lead retrieval | [`src/server/http.ts`](src/server/http.ts), [`src/meta/api.ts`](src/meta/api.ts) | complete — the webhook carries a `leadgen_id`, the answers are fetched |
 | F. Call result | [`src/pipeline/webhooks.ts`](src/pipeline/webhooks.ts) | complete — our contract; configure the agent to match ([guide](docs/omnidimension.md)) |
 | G. AI review | [`src/economics/`](src/economics) | complete |
+| G2. Iterate | [`src/creative/iterate.ts`](src/creative/iterate.ts) | complete — an ITERATE decision writes the next untried angle into the running ad set, at no extra budget |
 | H. Human gate #2 | [`src/approvals/gates.ts`](src/approvals/gates.ts) | complete |
 | (G on a timer) | [`src/scheduler.ts`](src/scheduler.ts) | complete — `cycle`, `schedule`, `serve --schedule` |
 | Creative engine | [`src/creative/`](src/creative) | complete — asset library, generated fallback, upload to Meta |

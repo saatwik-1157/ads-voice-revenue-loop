@@ -3,6 +3,7 @@ import type { Brief, Recommendation } from './core/types.ts';
 import { planScale, type ScalePlan } from './economics/decision.ts';
 import { GATE_2, requestGate2 } from './approvals/gates.ts';
 import { money } from './core/util.ts';
+import { iterateCreative, type IterationOutcome } from './creative/iterate.ts';
 
 /**
  * Acting on a recommendation, inside what the agent may do alone.
@@ -40,7 +41,14 @@ export type ApplyOutcome =
   | { kind: 'approval_requested'; approvalId: string; plan: ScalePlan; pausedAds: number }
   | { kind: 'approval_pending'; approvalId: string; plan: ScalePlan; pausedAds: number }
   | { kind: 'budget_deferred'; reason: string; plan: ScalePlan; pausedAds: number }
-  | { kind: 'no_change'; reason: string; plan: ScalePlan; pausedAds: number };
+  | { kind: 'no_change'; reason: string; plan: ScalePlan; pausedAds: number }
+  | {
+      kind: 'iterated';
+      reason: string;
+      iteration: IterationOutcome;
+      plan: ScalePlan;
+      pausedAds: number;
+    };
 
 export async function applyRecommendation(
   ctx: Context,
@@ -78,6 +86,17 @@ export async function applyRecommendation(
 
   const plan = planScale(g, campaign.dailyBudgetMinor, rec.decision, rec.perAd);
   const pausedAds = await pauseKilledAds(ctx, runId, rec, plan);
+
+  // ITERATE was the one decision of the four that did nothing. The engine would
+  // say the offer is not landing, write a different angle - and then hold
+  // everything exactly as it was, reaching the same conclusion on every cycle
+  // after that. Killing the losing creative frees the slot this then fills.
+  if (rec.decision === 'ITERATE') {
+    const iteration = await iterateCreative(ctx, runId, brief);
+    if (iteration.status !== 'not_applicable') {
+      return { kind: 'iterated', reason: iteration.reason, iteration, plan, pausedAds };
+    }
+  }
 
   if (plan.proposedDailyMinor === campaign.dailyBudgetMinor) {
     return { kind: 'no_change', reason: plan.reason, plan, pausedAds };
@@ -268,6 +287,10 @@ export function describeOutcome(outcome: ApplyOutcome, currency: string): string
       return `waiting on gate #2 approval ${outcome.approvalId}; no new request filed`;
     case 'budget_deferred':
       return `budget raise deferred: ${outcome.reason}`;
+    case 'iterated':
+      return outcome.iteration.status === 'published'
+        ? `${outcome.reason}${outcome.pausedAds ? `, after pausing ${outcome.pausedAds} creative(s)` : ''}`
+        : `no new creative: ${outcome.reason}`;
     case 'no_change':
       return `no budget change (${outcome.reason})`;
   }

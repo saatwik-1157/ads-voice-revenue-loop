@@ -392,3 +392,84 @@ test('per-ad leads add up to the run total, or the difference is named', async (
   assert.equal(run.leads - perAd.leads, run.unattributedLeads, 'the gap is exactly what carries no ad id');
   store.close();
 });
+
+test('a creative is not killed when untraced leads could explain its CPL', async () => {
+  // 600 spend, 3 leads traced to this ad and 4 more on the run with no ad id.
+  // Measured CPL is 200; if those four were also its, the true CPL is 86 and
+  // the target is 77 with a kill threshold of 154. Killing here would pause a
+  // working creative for a tracking fault.
+  const { store, runId, brief } = await seed();
+  const meta = new MockMetaProvider(3);
+  approve(store, requestGate1(store, G, runId, brief, 20000).approvalId, 'tester');
+  const { campaign } = await publishCampaign(store, meta, G, runId, brief, 'page_1', {
+    dailyBudgetMinor: 20000,
+    windowDays: 3,
+  });
+  const adId = store.listAds(campaign.campaignId)[0]!.adId;
+
+  store.recordSpend({ runId, adId, spendMinor: 60000, impressions: 5000, clicks: 100, leads: 3, asOf: now() });
+
+  for (let i = 0; i < 3; i += 1) {
+    const l = intakeLead(store, G, runId, {
+      name: `Traced ${i}`,
+      phone: `98${String(10000000 + i)}`,
+      consent: true,
+      consentSource: 'meta_instant_form',
+      adId,
+    });
+    if (l.status !== 'accepted') throw new Error('setup failed');
+  }
+  for (let i = 0; i < 4; i += 1) {
+    const l = intakeLead(store, G, runId, {
+      name: `Untraced ${i}`,
+      phone: `97${String(20000000 + i)}`,
+      consent: true,
+      consentSource: 'meta_instant_form',
+      adId: null,
+    });
+    if (l.status !== 'accepted') throw new Error('setup failed');
+  }
+
+  const rec = evaluate(store, G, runId, brief);
+  const forAd = rec.perAd.find((a) => a.adId === adId);
+  assert.notEqual(forAd?.decision, 'KILL', 'untraced leads could account for this CPL');
+  assert.match(forAd?.rationale ?? '', /best case/);
+  store.close();
+});
+
+test('a creative is still killed when even its best case is expensive', async () => {
+  // The other half, and the reason this is a bound rather than a blanket
+  // excuse: 600 spend, 1 traced lead, 1 untraced on the run. Best case is 300
+  // per lead against a 154 kill threshold, so attribution cannot explain it.
+  const { store, runId, brief } = await seed();
+  const meta = new MockMetaProvider(4);
+  approve(store, requestGate1(store, G, runId, brief, 20000).approvalId, 'tester');
+  const { campaign } = await publishCampaign(store, meta, G, runId, brief, 'page_1', {
+    dailyBudgetMinor: 20000,
+    windowDays: 3,
+  });
+  const adId = store.listAds(campaign.campaignId)[0]!.adId;
+
+  store.recordSpend({ runId, adId, spendMinor: 60000, impressions: 5000, clicks: 100, leads: 1, asOf: now() });
+
+  const traced = intakeLead(store, G, runId, {
+    name: 'Traced',
+    phone: '9811111111',
+    consent: true,
+    consentSource: 'meta_instant_form',
+    adId,
+  });
+  const untraced = intakeLead(store, G, runId, {
+    name: 'Untraced',
+    phone: '9722222222',
+    consent: true,
+    consentSource: 'meta_instant_form',
+    adId: null,
+  });
+  if (traced.status !== 'accepted' || untraced.status !== 'accepted') throw new Error('setup failed');
+
+  const rec = evaluate(store, G, runId, brief);
+  const forAd = rec.perAd.find((a) => a.adId === adId);
+  assert.equal(forAd?.decision, 'KILL', 'a bound, not a blanket excuse - this one is genuinely expensive');
+  store.close();
+});

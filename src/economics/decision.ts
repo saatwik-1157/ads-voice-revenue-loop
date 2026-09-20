@@ -24,17 +24,27 @@ export function evaluate(store: Store, g: Guardrails, runId: string, brief: Brie
   });
 
   // Per-ad judgement is only as good as the round trip that says which ad a
-  // lead came from. When leads are arriving without one, an ad's real leads
-  // are invisible to its own economics.
-  const attributionIntact = economics.unattributedLeads === 0;
+  // lead came from. When leads arrive without one, an ad's real leads are
+  // invisible to its own economics and its measured CPL reads high.
+  //
+  // This used to be a yes/no - any untraced lead at all and every per-ad kill
+  // was disabled. Too blunt in both directions: one lost lead in a hundred
+  // stopped a creative that was genuinely burning money from being killed,
+  // while the check said nothing about how much of the run was actually
+  // affected. Instead each ad is judged against the best case its own numbers
+  // allow, by asking what its CPL would be if *every* untraced lead on the run
+  // turned out to be its. If even that is over the threshold, attribution loss
+  // cannot be the explanation and the ad can be killed on its own merits.
+  const unattributed = economics.unattributedLeads;
 
   const signal = diagnose(economics, g, brief);
   const perAdDecisions = perAd.map((entry) => ({
     adId: entry.adId,
-    decision: judgeAd(entry.economics, g, brief, signal.decision, attributionIntact),
-    rationale: attributionIntact
-      ? adRationale(entry.economics, g, brief)
-      : `${adRationale(entry.economics, g, brief)} - judged cautiously: ${economics.unattributedLeads} lead(s) on this run carry no ad id`,
+    decision: judgeAd(entry.economics, g, brief, signal.decision, unattributed),
+    rationale:
+      unattributed === 0
+        ? adRationale(entry.economics, g, brief)
+        : `${adRationale(entry.economics, g, brief)} - judged against its best case: ${unattributed} lead(s) on this run carry no ad id and could be its`,
     economics: entry.economics,
   }));
 
@@ -210,7 +220,11 @@ function diagnose(e: Economics, g: Guardrails, brief: Brief): Diagnosis {
  * had a fair share of spend - otherwise the engine just kills whichever ad the
  * auction happened to starve.
  */
-function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decision, attributionIntact: boolean): Decision {
+/**
+ * `unattributedLeads` is the run's count, not this ad's - by definition an
+ * untraced lead belongs to no ad, and any of them could be this one's.
+ */
+function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decision, unattributed: number): Decision {
   if (runDecision === 'KILL') return 'KILL';
   const minSpend = Math.round(g.minSpendBeforeKillMinor / Math.max(1, brief.creatives.length));
   if (e.spendMinor < minSpend) return 'KEEP';
@@ -220,13 +234,19 @@ function judgeAd(e: Economics, g: Guardrails, brief: Brief, runDecision: Decisio
   // the run total and nowhere else, and killing on zero here pauses a working
   // creative for a tracking fault - the exact confusion the run-level rules
   // are ordered to avoid.
-  if (e.leads === 0) return attributionIntact ? 'KILL' : 'KEEP';
-  // The same reasoning one line up, and it was missing here. This CPL divides
-  // the ad's FULL spend by only the leads that could be traced to it, so with
-  // attribution partly lost it reads high for a creative that is doing fine:
-  // 600 spend and 7 real leads, 4 of them untraceable, shows as a CPL of 200
-  // against a true 86 and gets the creative paused for a tracking fault.
-  if (attributionIntact && e.cplMinor !== null && e.cplMinor > brief.successMetrics.targetCplMinor * 2) return 'KILL';
+  // The best CPL this ad could possibly have: its full spend over its own
+  // leads plus every untraced lead on the run. Nothing can make it cheaper
+  // than this, so a kill decided here cannot be a tracking fault.
+  const killAboveMinor = brief.successMetrics.targetCplMinor * 2;
+  const bestCaseLeads = e.leads + unattributed;
+  const bestCaseCplMinor = bestCaseLeads > 0 ? Math.round(e.spendMinor / bestCaseLeads) : null;
+
+  if (e.leads === 0) {
+    // No leads it can call its own. Still only a kill if it would be expensive
+    // even holding every untraced lead on the run.
+    return bestCaseCplMinor !== null && bestCaseCplMinor > killAboveMinor ? 'KILL' : 'KEEP';
+  }
+  if (bestCaseCplMinor !== null && bestCaseCplMinor > killAboveMinor) return 'KILL';
   if (e.qualifiedLeads === 0 && e.connectedLeads >= 5) return 'ITERATE';
   return 'KEEP';
 }

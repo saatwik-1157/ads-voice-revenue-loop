@@ -676,6 +676,15 @@ tests/         one file per area; run by `npm test` and on every push
 assets/        drop cleared artwork here (empty = generated fallback)
 data/          runtime state - database, previews, mock ad account. Gitignored,
                created on demand, and `reset --yes` throws it away
+
+deploy/        provision.sh (fresh host to running stack), quick-tunnel.sh
+               (throwaway public HTTPS URL), verify.sh (post-deploy checks)
+Dockerfile, docker-compose.yml, Caddyfile
+               the VPS deployment: app container behind Caddy with TLS
+docker-compose.tunnel.yml
+               the no-server route, behind a Cloudflare tunnel (docs/DEPLOY.md)
+.github/workflows/ci.yml
+               lint, typecheck, tests and the demo on pushes to main and PRs
 ```
 
 Two interfaces have exactly two implementations each, and that is deliberate: `MetaProvider` (API,
